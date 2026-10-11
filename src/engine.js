@@ -48,7 +48,7 @@ TT.UNITS = {
   cloak:      { name: 'Cloak',       cost: 6,  atk: 0,   def: 1, move: 2, range: 1, hp: 8,  skills: ['stealth', 'infiltrate'], tech: 'diplomacy' },
   knight:     { name: 'Knight',      cost: 8,  atk: 3,   def: 1, move: 3, range: 1, hp: 10, skills: ['dash', 'persist', 'charge', 'fortify'], tech: 'chivalry' },
   catapult:   { name: 'Catapult',    cost: 8,  atk: 4,   def: 0, move: 1, range: 3, hp: 10, skills: ['splash'], tech: 'mathematics' },
-  giant:      { name: 'Giant',       cost: 12, atk: 5,   def: 4, move: 1, range: 1, hp: 40, skills: ['dash', 'shove', 'stomp'], tech: null, super: true },
+  giant:      { name: 'Giant',       cost: 12, atk: 5,   def: 4, move: 1, range: 1, hp: 40, skills: ['shove', 'stomp'], tech: null, super: true },
 };
 TT.UNIT_ORDER = ['warrior', 'rider', 'archer', 'defender', 'shaman', 'balloon', 'swordsman', 'mindbender', 'cloak', 'knight', 'catapult'];
 
@@ -320,12 +320,12 @@ TT.newGame = function (settings) {
   const W = TT.MAP_SIZES[S.size] || 16, H = W;
   const nPlayers = Math.max(2, Math.min(6, (S.opponents | 0) + 1));
   // tribes
-  // S.tribes fixes the tribe per seat (multiplayer lobbies, balance tests); otherwise seat 0 gets S.tribe
-  let tribes = [];
-  if (Array.isArray(S.tribes)) tribes = S.tribes.filter((t, i, a) => t && TT.tribe(t) && a.indexOf(t) === i).slice(0, nPlayers);
-  else if (!S.spectate) tribes.push(S.tribe);
+  // S.tribes fixes the tribe per seat (null = any; online rooms, balance tests); otherwise seat 0 gets S.tribe
+  const tribes = new Array(nPlayers).fill(null);
+  if (Array.isArray(S.tribes)) S.tribes.slice(0, nPlayers).forEach((t, i) => { if (t && TT.tribe(t) && tribes.indexOf(t) < 0) tribes[i] = t; });
+  else if (!S.spectate) tribes[0] = S.tribe;
   const pool = TT.TRIBES.map(t => t.id).filter(id => tribes.indexOf(id) < 0);
-  while (tribes.length < nPlayers) tribes.push(pool.splice((R() * pool.length) | 0, 1)[0]);
+  for (let i = 0; i < nPlayers; i++) if (!tribes[i]) tribes[i] = pool.splice((R() * pool.length) | 0, 1)[0];
 
   let tiles, caps;
   for (let attempt = 0; attempt < 12; attempt++) {
@@ -583,6 +583,7 @@ TT.stats = function (st, u) {
   if (u.naval) {
     const N = TT.NAVAL[u.naval];
     atk = N.atk; def = N.def; move = N.move; range = N.range; skills = N.skills;
+    if (B.super) skills = skills.filter(k => k !== 'dash');   // a giant never attacks after moving, even afloat
     if (P.tribe === 'tidecallers') move += 1;
   }
   if (P.buff.forge && atk > 0) atk += 1;
@@ -1014,6 +1015,8 @@ TT.capture = function (st, uid) {
 function eliminate(st, pid, by, evs) {
   const P = st.players[pid];
   P.alive = false;
+  st.stats.outs = (st.stats.outs || 0) + 1;
+  P.out = st.stats.outs;   // elimination order, for the final ranking
   for (const o of st.units.slice()) if (o.owner === pid) killUnit(st, o, null, evs);
   evs.push({ type: 'eliminated', pid, by });
   log(st, P.name + ' has fallen.', pid);
@@ -1469,6 +1472,21 @@ TT.scoreBreakdown = function (st, pid) {
   return b;
 };
 TT.score = (st, pid) => TT.scoreBreakdown(st, pid).total;
+// Ranking, now or at the end. Score victory: highest score first. Domination (or any game won by conquest): the last
+// tribe standing, then survivors by score, then the fallen, the most recently eliminated first.
+TT.standings = function (st) {
+  const outOrder = P => (P.alive ? Infinity : P.out != null ? P.out : (() => { const hst = P.scoreHist || []; let t = hst.length; while (t > 0 && !(hst[t - 1] > 0)) t--; return t / 1000; })());
+  const w = st.over ? st.over.winner : -1;
+  const byScore = st.settings.mode === 'score' && !(st.over && st.over.reason === 'domination');
+  const rows = st.players.map(P => ({ P, seat: P.id, alive: P.alive, score: P.alive ? TT.score(st, P.id) : 0, out: outOrder(P), peak: Math.max(0, ...(P.scoreHist || [0])) }));
+  rows.sort((a, b) => (b.seat === w) - (a.seat === w)
+    || (byScore ? b.score - a.score : 0)
+    || b.alive - a.alive
+    || (a.alive ? b.score - a.score : b.out - a.out)
+    || b.peak - a.peak);
+  rows.forEach((r, i) => { r.place = i + 1; });
+  return rows;
+};
 
 function checkWin(st, evs) {
   if (st.over) return;

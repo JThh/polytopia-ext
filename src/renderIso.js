@@ -116,6 +116,12 @@ R3.fit = function (leftPx) {
 };
 R3.rotate = function () {};
 R3.topView = function () { R3.fit(); };
+// move the camera target by a screen offset; the camera eases there (pan() jumps, for dragging)
+R3.nudge = function (dx, dy) {
+  const du = -dx / (cam.z * 0.5), dv = -dy / (cam.z * VR);
+  cam.tx += (du + dv) / 2; cam.ty += (dv - du) / 2;
+  clampCam();
+};
 R3.focus = function (x, y, immediate) { cam.tx = x + 0.5; cam.ty = y + 0.5; clampCam(); if (immediate) { cam.x = cam.tx; cam.y = cam.ty; } };
 R3.isOnScreen = function (x, y, m) {
   m = m == null ? 0.75 : m;
@@ -140,7 +146,7 @@ R3.pick = function (clientX, clientY) {
     if (!TT.visibleTo(st, u, viewer)) continue;
     const d = disp.get(u.id); if (!d) continue;
     const [ax, ay] = unitAnchor(u, d);
-    const top = (u.type === 'balloon' && !u.naval ? 1.0 : TT.UNITS[u.type].super ? 0.85 : 0.62) * cam.z * SPR * 100 * SPRY;
+    const top = unitTall(u) * 0.95 * cam.z * SPR * 100 * SPRY;
     if (px > ax - cam.z * 0.24 && px < ax + cam.z * 0.24 && py > ay - top && py < ay + cam.z * 0.06) {
       const depth = d.x + d.y;
       if (!best || depth > best.depth) best = { u, depth };
@@ -747,6 +753,12 @@ function drawCity(c, sx, sy, time, alpha) {
   if (!crowd && z > 40 && !reduceMotion && Math.random() < 0.008 * Math.min(4, c.level)) emit(c.x + 0.5 + (Math.random() - 0.5) * 0.3, c.y + 0.5 + (Math.random() - 0.5) * 0.3, { n: 1, color: [0xd0d1e0, 0xbfc0d3], speed: 0.04, up: 0.4, gravity: -0.1, life: 1.8, size: 0.035, z: 0.35 });
 }
 
+// how tall a unit stands (for its health badge and tap area); the giant towers, even in a boat
+function unitTall(u) {
+  if (u.type === 'giant') return u.naval ? 0.86 : 1.12;
+  if (u.type === 'balloon' && !u.naval) return 1.05;
+  return u.naval ? 0.58 : 0.66;
+}
 function unitAnchor(u, d) {
   const h = groundH(d.x, d.y);
   const tl = st.tiles[u.y * W + u.x];
@@ -780,12 +792,13 @@ function drawUnit(u, d, time) {
   const ready = viewer === u.owner && st.current === u.owner && !Pp.isAI && (u.canMove || u.canAttack) && !d.busy;
   if (!naval) {
     // owner base disc, flattened to the iso ground plane
-    g.beginPath(); g.ellipse(bx, by, z * 0.16, z * 0.16 * KR, 0, 0, Math.PI * 2);
+    const disc = u.type === 'giant' ? 0.21 : 0.16;
+    g.beginPath(); g.ellipse(bx, by, z * disc, z * disc * KR, 0, 0, Math.PI * 2);
     g.fillStyle = rgba(Pp.color, spent ? 0.35 : 0.9); g.fill();
     g.lineWidth = Math.max(1.2, z * 0.012); g.strokeStyle = css(dk(Pp.color, 0.5)); g.stroke();
     if (ready) {
       const pulse = 0.55 + 0.35 * Math.sin(time * 3 + d.ph);
-      g.beginPath(); g.ellipse(bx, by, z * 0.22, z * 0.22 * KR, 0, 0, Math.PI * 2);
+      g.beginPath(); g.ellipse(bx, by, z * (disc + 0.06), z * (disc + 0.06) * KR, 0, 0, Math.PI * 2);
       g.lineWidth = Math.max(2, z * 0.022); g.strokeStyle = 'rgba(255,255,255,' + pulse.toFixed(2) + ')'; g.stroke();
     }
   }
@@ -976,7 +989,7 @@ function drawLabels(time) {
       if (!TT.visibleTo(st, u, viewer) && !d.busy) continue;
       const S = TT.stats(st, u), Pp = st.players[u.owner];
       const [ax, ay] = unitAnchor(u, d);
-      const tall = u.type === 'balloon' && !u.naval ? 1.05 : TT.UNITS[u.type].super ? 0.9 : u.naval ? 0.58 : 0.66;
+      const tall = unitTall(u);
       const bx = ax + z * 0.2, by = ay - z * SPR * 100 * tall * 0.78 * SPRY;
       if (bx < -40 || bx > VW + 40 || by < -40 || by > VH + 40) continue;
       const spent = viewer === u.owner && st.current === u.owner && !Pp.isAI && !u.canMove && !u.canAttack;

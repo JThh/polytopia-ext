@@ -1,9 +1,8 @@
-// Local preview that mimics Vercel: serves public/ and runs api/*.js as functions.
-// Without storage env vars it uses an in-memory leaderboard (wiped on restart).
+// Local preview that mimics Vercel: serves public/ and runs api/*.js as functions, with settings from .env.local.
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
-if (!process.env.KV_REST_API_URL && !process.env.UPSTASH_REDIS_REST_URL) process.env.TESSERA_DEV_MEMORY = '1';
+require('./env')();
 const PORT = Number(process.env.PORT) || 3000;
 const TYPES = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript', '.css': 'text/css', '.json': 'application/json', '.svg': 'image/svg+xml', '.png': 'image/png' };
 
@@ -30,4 +29,4 @@ http.createServer((req, res) => {
   if (!file.startsWith(path.join(__dirname, 'public')) || !fs.existsSync(file) || fs.statSync(file).isDirectory()) { res.statusCode = 404; return res.end('Not found'); }
   res.setHeader('Content-Type', TYPES[path.extname(file)] || 'application/octet-stream');
   fs.createReadStream(file).pipe(res);
-}).listen(PORT, () => console.log('Tessera Tribes on http://localhost:' + PORT + (process.env.TESSERA_DEV_MEMORY ? '  (in-memory leaderboard)' : '')));
+}).listen(PORT, () => console.log('Tessera Tribes on http://localhost:' + PORT + (process.env.SUPABASE_URL ? '  (Supabase: ' + process.env.SUPABASE_URL + ')' : '  (no Supabase settings: solo only)')));

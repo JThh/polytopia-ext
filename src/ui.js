@@ -90,6 +90,10 @@ const ICON = {
   expand: '<path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/>',
   ruin: '<path d="M4 21V9M10 21V9M3 9h8M15 21v-6M21 21v-9M14 15h4M3 21h18"/>',
   home: '<path d="M4 11l8-7 8 7v9H4z"/><path d="M10 20v-5h4v5"/>',
+  globe: '<circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c3 3.2 3 14.8 0 18M12 3c-3 3.2-3 14.8 0 18"/>',
+  search: '<circle cx="11" cy="11" r="6.5"/><path d="M16 16l5 5"/>',
+  logout: '<path d="M14 4h4a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2h-4M10 16l-4-4 4-4M6 12h10"/>',
+  mail: '<rect x="3" y="5" width="18" height="14" rx="3"/><path d="M4 7l8 6 8-6"/>',
   skull: '<path d="M12 3a7 7 0 0 0-7 7c0 2.5 1.2 4 3 5v3h8v-3c1.8-1 3-2.5 3-5a7 7 0 0 0-7-7z"/><circle cx="9.5" cy="10.5" r="1.3"/><circle cx="14.5" cy="10.5" r="1.3"/>',
 };
 const POWER_ICON = { overgrowth: 'tree', forge: 'hammer', tailwind: 'wave', wildfire: 'bolt', blizzard: 'mountain', goldenage: 'star' };
@@ -139,16 +143,7 @@ function boot(hot) {
     try { startWith(TT.deserialize(hot.save)); return; } catch (e) { /* fall through to the title screen */ }
   }
   showMenu();
-  apiHealth().then(() => {
-    if (!$('#menu').hidden) syncMenu();
-    const code = new URLSearchParams(location.search).get('room');
-    if (code && roomsOK) {
-      setup.playMode = 'online'; syncMenu();
-      $('#onCode').value = code.toUpperCase();
-      if (store.get('room:' + code.toUpperCase(), null) || store.get('name', '')) joinRoom(code);
-      else { toast('Enter your name, then tap Join to enter room ' + code.toUpperCase() + '.'); $('#onName').focus(); }
-    }
-  });
+  onlineBoot();
 }
 G.addEventListener('DOMContentLoaded', () => {
   const hot = G.claude && G.claude.hot;
@@ -162,6 +157,8 @@ function inGameChrome(on) {
   ['#top', '#bottom', '#camctl', '#rail'].forEach(s => { $(s).hidden = !on; });
 }
 function showMenu() {
+  if (net) leaveOnline();   // e.g. "New game" after an online game: stop following that room
+  mode = 'solo'; localSeats = new Set(); soloRec = null;
   $('#menu').hidden = false;
   inGameChrome(false);
   $('#aiStrip').hidden = true;
@@ -178,16 +175,11 @@ function renderMenu() {
   body.innerHTML = ''; acts.innerHTML = '';
   body.className = 'glass setup1';
   $('.menu-card').classList.remove('in-steps');
-  // who plays: solo, pass & play on this device, or an online room with friends (bots fill any open seats)
-  menuRefs.play = h('div', { class: 'modeseg three', role: 'radiogroup', 'aria-label': 'Players' },
-    [['solo', 'users', 'Solo'], ['hotseat', 'users', 'Pass & play'], ['online', 'map', 'Online']].map(([k, ic, nm]) => h('button', { type: 'button', role: 'radio', class: 'mseg', 'data-v': k, id: 'play-' + k, onclick: () => { setup.playMode = k; syncMenu(); } }, icon(ic), nm)));
-  menuRefs.people = slider('opt-people', 'People', [2, 3, 4, 5, 6], () => Math.min(setup.people || 2, setup.opponents + 1), v => { setup.people = v; }, v => v + ' on this device');
-  menuRefs.online = h('div', { class: 'onrow' },
-    h('label', { class: 'sr', for: 'onName' }, 'Your name'), h('input', { id: 'onName', maxlength: '20', placeholder: 'Your name', autocomplete: 'nickname', value: store.get('name', '') }),
-    h('label', { class: 'sr', for: 'onCode' }, 'Room code'), h('input', { id: 'onCode', maxlength: '8', placeholder: 'Room code', autocomplete: 'off', class: 'code' }),
-    h('button', { class: 'btn', id: 'btnJoin', type: 'button', onclick: () => joinRoom($('#onCode').value) }, 'Join'));
-  menuRefs.onNote = h('p', { class: 'note' }, '');
-  body.append(h('div', { class: 'row' }, h('div', { class: 'rowh' }, h('span', { class: 'lbl' }, 'Players'), menuRefs.playLine = h('span', { class: 'rowval' })), menuRefs.play, menuRefs.people, menuRefs.online, menuRefs.onNote));
+  // who plays: solo against bots, or online against people on other devices
+  menuRefs.play = h('div', { class: 'modeseg', role: 'radiogroup', 'aria-label': 'Players' },
+    [['solo', 'users', 'Solo vs bots'], ['online', 'globe', 'Online']].map(([k, ic, nm]) => h('button', { type: 'button', role: 'radio', class: 'mseg', 'data-v': k, id: 'play-' + k, onclick: () => { setup.playMode = k; syncMenu(); } }, icon(ic), nm)));
+  menuRefs.online = h('div', { class: 'onpanel', id: 'onPanel' });
+  body.append(h('div', { class: 'row' }, h('div', { class: 'rowh' }, h('span', { class: 'lbl' }, 'Players'), menuRefs.playLine = h('span', { class: 'rowval' })), menuRefs.play), menuRefs.online);
   // tribe strip
   menuRefs.tribeLine = h('span', { class: 'rowval' });
   menuRefs.tribes = h('div', { class: 'strip', role: 'radiogroup', 'aria-label': 'Tribe' }, TT.TRIBES.map(t =>
@@ -200,13 +192,15 @@ function renderMenu() {
     const prev = mapPreview(k).cloneNode(false); prev.getContext('2d').drawImage(mapPreview(k), 0, 0);
     return h('button', { type: 'button', role: 'radio', class: 'opt map-opt', 'data-v': k, id: 'map-' + k, 'aria-label': TT.MAP_TYPES[k].name, onclick: () => { setup.mapType = k; syncMenu(); } }, prev, h('span', { class: 'opt-n' }, TT.MAP_TYPES[k].name));
   }));
-  body.append(h('div', { class: 'row' }, h('div', { class: 'rowh' }, h('span', { class: 'lbl' }, 'World'), menuRefs.mapLine), menuRefs.maps));
+  const worldRow = h('div', { class: 'row' }, h('div', { class: 'rowh' }, h('span', { class: 'lbl' }, 'World'), menuRefs.mapLine), menuRefs.maps);
+  body.append(worldRow);
   // sliders
   const sizes = Object.keys(TT.MAP_SIZES);
-  body.append(h('div', { class: 'sliders' },
+  const sliderRow = h('div', { class: 'sliders' },
     slider('opt-size', 'Size', sizes, () => setup.size, v => { setup.size = v; }, v => cap(v) + ' ' + TT.MAP_SIZES[v] + '²'),
     slider('opt-opp', 'Rivals', [1, 2, 3, 4, 5], () => setup.opponents, v => { setup.opponents = v; }, v => v + (v === 1 ? ' tribe' : ' tribes')),
-    slider('opt-diff', 'Bots', Object.keys(TT.DIFFICULTY), () => setup.difficulty, v => { setup.difficulty = v; }, v => TT.DIFFICULTY[v].name)));
+    slider('opt-diff', 'Bots', Object.keys(TT.DIFFICULTY), () => setup.difficulty, v => { setup.difficulty = v; }, v => TT.DIFFICULTY[v].name));
+  body.append(sliderRow);
   // victory + world toggles as one row of chips
   const chip = (id, ic, label, get, flip) => {
     const b = h('button', { type: 'button', id, class: 'mchip', role: 'switch', 'aria-label': label, title: label, onclick: () => { flip(!get()); syncMenu(); } }, icon(ic), h('span', null, label));
@@ -221,11 +215,16 @@ function renderMenu() {
     chip('opt-relief', 'mountain', 'Tall land', () => setup.relief !== 'gentle' && setup.relief !== 'flat', v => { setup.relief = v ? 'dramatic' : 'gentle'; if (attract) R3.setOptions({ relief: RELIEF[setup.relief] }); }),
     chip('opt-grid', 'topview', 'Grid', () => prefs.grid !== false, v => { prefs.grid = v; R3.setOptions({ grid: v }); }),
   ];
-  body.append(h('div', { class: 'row' }, h('div', { class: 'rowh' }, h('span', { class: 'lbl' }, 'Rules')), menuRefs.mode, h('div', { class: 'chiprow' }, menuRefs.chips)));
+  const rulesRow = h('div', { class: 'row' }, h('div', { class: 'rowh' }, h('span', { class: 'lbl' }, 'Rules')), menuRefs.mode, h('div', { class: 'chiprow' }, menuRefs.chips));
+  body.append(rulesRow);
+  menuRefs.soloRows = [worldRow, sliderRow, rulesRow];
   const saved = store.get('save', null);
-  add(acts, [h('button', { class: 'btn primary big', id: 'btnStart', type: 'button', onclick: () => { const m = setup.playMode || 'solo'; if (m === 'hotseat') newHotseat(Math.min(setup.people || 2, setup.opponents + 1)); else if (m === 'online') createRoom(); else newGame(false); } }, 'Play'),
+  menuRefs.soloActs = [h('button', { class: 'btn primary big', id: 'btnStart', type: 'button', onclick: () => newGame(false) }, 'Play'),
     saved ? h('button', { class: 'btn', id: 'btnContinue', type: 'button', onclick: continueGame }, 'Continue turn ' + saved.turn) : null,
-    h('button', { class: 'btn ghost', id: 'btnWatch', type: 'button', onclick: () => newGame(true) }, 'Watch the bots')]);
+    h('button', { class: 'btn ghost', id: 'btnWatch', type: 'button', onclick: () => newGame(true) }, 'Watch the bots')].filter(Boolean);
+  menuRefs.onActs = [h('button', { class: 'btn primary big', id: 'btnMatch', type: 'button', onclick: () => (search ? stopSearch() : startSearch()) }, 'Find match'),
+    h('button', { class: 'btn', id: 'btnRoom', type: 'button', onclick: () => createRoom() }, 'Create room')];
+  add(acts, menuRefs.soloActs.concat(menuRefs.onActs));
   syncMenu();
 }
 function slider(id, label, values, get, set, fmt, tick) {
@@ -252,16 +251,16 @@ function syncMenu() {
   menuRefs.mapLine.textContent = TT.MAP_TYPES[setup.mapType].name + ' · ' + TT.MAP_TYPES[setup.mapType].desc;
   menuRefs.mode.querySelectorAll('.mseg').forEach(b => { const on = b.dataset.v === setup.mode; b.classList.toggle('on', on); b.setAttribute('aria-checked', String(on)); });
   menuRefs.chips.forEach(b => { const on = !!b._get(); b.classList.toggle('on', on); b.setAttribute('aria-checked', String(on)); });
-  let pm = setup.playMode || 'solo';
-  if (pm === 'online' && roomsOK === false) pm = setup.playMode = 'solo';
-  menuRefs.play.querySelectorAll('.mseg').forEach(b => { const on = b.dataset.v === pm; b.classList.toggle('on', on); b.setAttribute('aria-checked', String(on)); if (b.dataset.v === 'online') { b.disabled = roomsOK !== true; b.title = roomsOK === true ? 'Play with friends online' : 'Online rooms need the deployed version with storage (see README)'; } });
-  menuRefs.people.hidden = pm !== 'hotseat';
+  const pm = setup.playMode === 'online' && onlineOK ? 'online' : 'solo';
+  menuRefs.play.querySelectorAll('.mseg').forEach(b => { const on = b.dataset.v === pm; b.classList.toggle('on', on); b.setAttribute('aria-checked', String(on)); if (b.dataset.v === 'online') { b.disabled = !onlineOK; b.title = onlineOK ? 'Play people on other devices' : 'Online play needs the deployed site with Supabase (see the README)'; } });
   menuRefs.online.hidden = pm !== 'online';
-  menuRefs.onNote.hidden = pm !== 'online';
-  menuRefs.onNote.textContent = 'Create a room, then share the invite link. Open seats are played by bots.';
-  const total = setup.opponents + 1, ppl = Math.min(setup.people || 2, total);
-  menuRefs.playLine.textContent = pm === 'solo' ? 'You against ' + setup.opponents + (setup.opponents === 1 ? ' bot' : ' bots') : pm === 'hotseat' ? ppl + ' people · ' + (total - ppl) + ' bots · one device' : 'Up to ' + total + ' friends · bots fill open seats';
-  const sb = $('#btnStart'); if (sb) sb.textContent = pm === 'online' ? 'Create room' : pm === 'hotseat' ? 'Play together' : 'Play';
+  if (pm === 'online') renderOnlinePanel(menuRefs.online);
+  menuRefs.soloRows.forEach(r => { r.hidden = pm === 'online'; });
+  menuRefs.soloActs.forEach(b => { b.hidden = pm === 'online'; });
+  menuRefs.onActs.forEach(b => { b.hidden = pm !== 'online' || !ON.profile; });
+  menuRefs.onActs[0].textContent = search ? 'Cancel search' : 'Find match';
+  menuRefs.onActs[0].classList.toggle('primary', !search);
+  menuRefs.playLine.textContent = pm === 'solo' ? 'You against ' + setup.opponents + (setup.opponents === 1 ? ' bot' : ' bots') : ON.profile ? 'Signed in as ' + ON.profile.username : 'People on other devices';
   saveSetup();
 }
 const mapPreviews = {};
@@ -301,33 +300,35 @@ function startAttract() {
 const frameWait = () => new Promise(r => requestAnimationFrame(() => r()));
 const reducedMotion = () => matchMedia('(prefers-reduced-motion: reduce)').matches;
 
+// a solo game keeps its starting settings and every move, so a signed-in player's result can be verified by replay
+const SOLO_KEYS = ['tribe', 'opponents', 'difficulty', 'size', 'mapType', 'mode', 'turnLimit', 'relief', 'events', 'fog', 'dayCycle', 'seed'];
+let soloRec = null;
 function newGame(spectate) {
   prefs.setup = setup; savePrefs();
-  startWith(TT.newGame(Object.assign({}, setup, { spectate, seed: 0, tribes: null, humans: null })), { mode: spectate ? 'spectate' : 'solo' });
-}
-function newHotseat(people) {
-  prefs.setup = setup; savePrefs();
-  const n = Math.max(2, Math.min(setup.opponents + 1, people | 0));
-  const humans = Array.from({ length: n }, (_, i) => i);
-  startWith(TT.newGame(Object.assign({}, setup, { spectate: false, seed: 0, humans, tribes: [setup.tribe] })), { mode: 'hotseat', localSeats: new Set(humans) });
+  const init = Object.assign({}, setup, { spectate, seed: ((Math.random() * 2147483646) | 0) + 1, tribes: null, humans: null });
+  const rec = spectate ? null : { init: {}, log: [] };
+  if (rec) SOLO_KEYS.forEach(k => { if (init[k] !== undefined) rec.init[k] = init[k]; });
+  startWith(TT.newGame(init), { mode: spectate ? 'spectate' : 'solo', solo: rec });
 }
 function continueGame() {
   const saved = store.get('save', null);
   if (!saved) return;
-  try { startWith(TT.deserialize(saved.data)); } catch (e) { toast('That save could not be loaded. Start a new game instead.'); store.del('save'); renderMenu(); }
+  try { startWith(TT.deserialize(saved.data), { solo: saved.solo || null }); } catch (e) { toast('That save could not be loaded. Start a new game instead.'); store.del('save'); renderMenu(); }
 }
 function startWith(s, opts) {
   opts = opts || {};
   attract = false; token++;
   st = s; sel = null; busy = false; paused = false; armed = null; lastLog = st.log.length; hintDismissed = {}; hintShownTurn = {}; siegeSeen = {}; $('#siege').hidden = true; justLearned = null; preview = null; techSel = null; lastInteract = performance.now(); hideHint();
   const people = st.players.filter(p => !p.isAI).map(p => p.id);
-  mode = opts.mode || (!people.length ? 'spectate' : people.length > 1 ? 'hotseat' : 'solo');
+  mode = opts.mode || (!people.length ? 'spectate' : 'solo');
+  soloRec = mode === 'solo' ? opts.solo || null : null;
   localSeats = opts.localSeats || new Set(people);
   net = opts.net || null;
   const n0 = net;   // bound to this connection, so a stale bot turn can never leak moves into a rebuilt game
-  TT.setRecorder(st, n0 ? (cmd => { if (net === n0 && !n0.applying) n0.outbox.push(cmd); }) : null);
+  const rec = soloRec;
+  TT.setRecorder(st, n0 ? (cmd => { if (net === n0 && !n0.applying) n0.outbox.push(cmd); }) : rec ? (cmd => { rec.log.push(JSON.parse(JSON.stringify(cmd))); }) : null);
   human = localSeats.size ? (localSeats.has(st.current) ? st.current : localSeats.values().next().value) : -1;
-  $('#menu').hidden = true; $('#gameover').hidden = true; $('#pause').hidden = true; $('#lobby').hidden = true; $('#curtain').hidden = true;
+  $('#menu').hidden = true; $('#gameover').hidden = true; $('#pause').hidden = true; $('#lobby').hidden = true;
   inGameChrome(true);
   $('#rail').classList.remove('open');
   R3.setOptions({ relief: RELIEF[st.settings.relief] || 1, dayCycle: st.settings.dayCycle !== false, speed: SPEED[prefs.speed], instant: false });
@@ -354,8 +355,7 @@ function botRunner(pid) {
 }
 function iRunBots() { return mode !== 'online' || localSeats.has(botRunner(st.current)); }
 function seatLabel(pid) {
-  if (mode === 'online' && net && net.room) { const s = net.room.seats[pid]; return s && s.name && !st.players[pid].isAI ? s.name : ''; }
-  if (mode === 'hotseat' && !st.players[pid].isAI) return 'Player ' + ([...localSeats].sort((a, b) => a - b).indexOf(pid) + 1);
+  if (mode === 'online' && net && net.players) { const p = net.players.find(x => x.seat === pid); return p && !st.players[pid].isAI ? p.username : ''; }
   return '';
 }
 const sleep = ms => new Promise(r => setTimeout(r, ms));
@@ -377,9 +377,8 @@ async function drive() {
   await localTurnStart(false);
 }
 async function runBotTurn(my) {
-  const quiet = mode === 'hotseat' && localSeats.size > 1 && st.settings.fog;
   showAIStrip('bot');
-  const inst = (prefs.speed === 'instant' && human >= 0) || quiet;
+  const inst = prefs.speed === 'instant' && human >= 0;
   R3.setOptions({ instant: inst, speed: SPEED[prefs.speed] * (human < 0 ? 0.8 : 1) });
   const seat = st.current;
   let n = 0;
@@ -404,24 +403,9 @@ function noteLosses(evs) {
 }
 async function localTurnStart(first) {
   const seat = st.current;
-  if (mode === 'hotseat' && localSeats.size > 1) await handoff(seat);
   if (human !== seat) { human = seat; R3.setViewer(seat); miniSig = ''; }
   beginHumanTurn(first);
 }
-// pass & play: an opaque curtain between turns so nobody sees another tribe's view
-function handoff(seat) {
-  return new Promise(res => {
-    const P = st.players[seat], c = $('#curtain');
-    const av = $('#curtainAv'); av.innerHTML = ''; av.style.setProperty('--tc', hex(P.color)); av.append(art({ kind: 'unit', type: 'warrior', color: P.color, tribe: P.tribe, pad: 1 }, 96));
-    $('#curtainTitle').textContent = seatLabel(seat) + ' · ' + P.name;
-    $('#curtainSub').textContent = 'Pass the device to ' + seatLabel(seat) + ', then tap Ready.';
-    c.hidden = false;
-    const btn = $('#curtainGo');
-    btn.onclick = () => { c.hidden = true; btn.onclick = null; res(); };
-    setTimeout(() => btn.focus(), 30);
-  });
-}
-
 function beginHumanTurn(first) {
   R3.setOptions({ speed: SPEED[prefs.speed], instant: false });
   lastInteract = performance.now(); hideHint();
@@ -431,7 +415,7 @@ function beginHumanTurn(first) {
   const P = st.players[human];
   const cap = st.cities.find(c => c.owner === human && c.capital) || st.cities.find(c => c.owner === human);
   if (!first && cap && !R3.isOnScreen(cap.x, cap.y, 1)) R3.focus(cap.x, cap.y);
-  const who = mode === 'hotseat' ? P.name + "'s turn" : first ? 'Your tribe awaits' : 'Your turn';
+  const who = first ? 'Your tribe awaits' : 'Your turn';
   showTurnBanner(who, (seatLabel(human) ? seatLabel(human) + ' · ' : '') + 'Turn ' + st.turn + ' · ' + P.stars + ' stars (+' + TT.income(st, human) + ')');
   promptRewards();
 }
@@ -453,7 +437,7 @@ function onLearned(k) {
   if (tiles.length) { justLearned = { tech: k, tiles, build: builds[0], turn: st.turn }; burstNext = true; }
   $('#tech').hidden = true;
 }
-function save() { if (human >= 0 && !st.over && mode !== 'online') store.set('save', { turn: st.turn, data: TT.serialize(st) }); }
+function save() { if (human >= 0 && !st.over && mode === 'solo') store.set('save', { turn: st.turn, data: TT.serialize(st), solo: soloRec }); }
 
 async function act(evs) {
   if (!evs) return false;
@@ -545,6 +529,7 @@ function refresh() {
   renderRail();
   renderInfo();
   renderDock();
+  keepSelInView();
   updateHighlights();
   actionSet = actionableTiles();
   R3.setActionable(actionSet, burstNext); burstNext = false;
@@ -724,7 +709,7 @@ function renderTop() {
 function renderRail() {
   const box = $('#standings');
   box.innerHTML = '';
-  const rows = st.players.map(P => ({ P, s: P.alive ? TT.score(st, P.id) : -1 })).sort((a, b) => b.s - a.s);
+  const rows = TT.standings(st).map(r => ({ P: r.P, s: r.alive ? r.score : -1 }));
   const top = Math.max(1, rows[0].s);
   rows.forEach(({ P, s }, k) => {
     const nC = st.cities.filter(c => c.owner === P.id).length;
@@ -797,13 +782,30 @@ function drawMini() {
     g.lineWidth = 3; g.strokeStyle = 'rgba(255,255,255,0.9)'; g.stroke();
   }
 }
+// On narrow screens the card can cover what was just tapped: ease the camera so it sits above the card.
+let selSeen = '';
+function keepSelInView() {
+  const key = sel ? sel.kind + ':' + (sel.uid != null ? sel.uid : sel.cid != null ? sel.cid : sel.i) : '';
+  if (key === selSeen) return;
+  selSeen = key;
+  if (!sel || !st || attract || (innerWidth > 820 && innerHeight > 520)) return;
+  requestAnimationFrame(() => {
+    if (!sel) return;
+    const pos = sel.kind === 'unit' ? R3.unitScreenPos(sel.uid) : sel.kind === 'city' ? R3.tileScreenPos(st.cities[sel.cid].x, st.cities[sel.cid].y) : R3.tileScreenPos(sel.i % st.W, (sel.i / st.W) | 0);
+    if (!pos) return;
+    const top = ($('#top').hidden ? 0 : $('#top').getBoundingClientRect().bottom) + pos.z * 0.6, bottom = $('#bottom').getBoundingClientRect().top - pos.z * 0.35;
+    if (bottom - top < 60) return;
+    const mid = top + (bottom - top) * 0.45;
+    if (pos.y > bottom || pos.y < top) R3.nudge(0, mid - pos.y);
+  });
+}
 function uiFrame(t) {
   requestAnimationFrame(uiFrame);
   if (t - miniLast > 160) {
     miniLast = t; drawMini(); tickHint();
     if (st && !attract) {
       const topB = $('#top').hidden ? 0 : $('#top').getBoundingClientRect().bottom;
-      const narrow = innerWidth <= 820, bot = $('#bottom');
+      const narrow = innerWidth <= 820 || innerHeight <= 520, bot = $('#bottom');
       R3.setInsets(topB, narrow && !bot.hidden ? innerHeight - bot.getBoundingClientRect().top : 0);
     } else R3.setInsets(0, 0);
   }
@@ -1260,8 +1262,8 @@ function showGameOver() {
   const m = $('#gameover');
   m.hidden = false;
   const W = st.players[st.over.winner];
-  const many = mode !== 'solo' && localSeats.size + (net ? st.players.filter(P => !P.isAI).length : 0) > 1;
-  const won = mode === 'online' ? !!net && st.over.winner === net.seat : localSeats.has(st.over.winner) && !many;
+  const many = mode === 'online' && !!net;
+  const won = many ? st.over.winner === net.seat : localSeats.has(st.over.winner);
   const wl = seatLabel(st.over.winner);
   $('#goCrest').style.setProperty('--tc', hex(W.color));
   $('#goCrest').innerHTML = ''; $('#goCrest').append(art({ kind: 'unit', type: 'swordsman', color: W.color, tribe: W.tribe, pad: 1 }, 64));
@@ -1270,66 +1272,7 @@ function showGameOver() {
   $('#goSub').textContent = st.over.reason === 'domination' ? wn + ' conquered every rival by turn ' + st.turn + '.' : st.over.reason === 'score' ? wn + ' had the highest score after ' + st.settings.turnLimit + ' turns.' : (many ? 'Every player has fallen. ' : 'Your tribe has fallen. ') + W.name + ' leads the world.';
   scoreChart();
   store.del('save');
-  if (human >= 0 && mode === 'solo') offerLeaderboard();
-}
-
-// ---------------------------------------------------------------- online leaderboard (optional backend)
-let boardOK = null, boardSent = false;
-async function apiHealth() {
-  if (boardOK !== null) return boardOK;
-  if (!/^https?:$/.test(location.protocol)) { roomsOK = false; return (boardOK = false); }
-  try {
-    const ctl = new AbortController(); const t = setTimeout(() => ctl.abort(), 2500);
-    const r = await fetch('/api/health', { signal: ctl.signal, cache: 'no-store' });
-    clearTimeout(t);
-    const j = r.ok ? await r.json() : null;
-    boardOK = !!(j && j.leaderboard);
-    roomsOK = !!(j && j.rooms);
-  } catch (e) { boardOK = false; roomsOK = false; }
-  return boardOK;
-}
-async function loadBoard(highlight) {
-  const ol = $('#goTop');
-  try {
-    const r = await fetch('/api/scores', { cache: 'no-store' });
-    const j = await r.json();
-    if (!r.ok) throw new Error(j.error || 'HTTP ' + r.status);
-    ol.innerHTML = '';
-    (j.scores || []).forEach((e, k) => {
-      const tr = TT.tribe(e.tribe);
-      ol.append(h('li', { class: highlight && e.name === highlight.name && e.score === highlight.score ? 'me' : '', style: '--tc:' + hex(tr ? tr.color : 0x7d7f9f) },
-        h('span', { class: 'rk' }, String(k + 1)), h('span', { class: 'chip' }), h('span', { class: 'nm' }, e.name, h('small', null, (tr ? tr.name : '') + ' · T' + e.turn + (e.won ? ' · won' : ''))), h('span', { class: 'sc' }, Number(e.score).toLocaleString())));
-    });
-    if (!ol.children.length) $('#goBoardMsg').textContent = 'No scores yet. Be the first.';
-  } catch (e) { $('#goBoardMsg').textContent = 'The leaderboard could not be loaded.'; }
-}
-async function offerLeaderboard() {
-  boardSent = false;
-  $('#goBoard').hidden = true;
-  if (!(await apiHealth())) return;
-  $('#goBoard').hidden = false;
-  $('#goBoardMsg').textContent = '';
-  $('#goName').value = store.get('name', '');
-  $('#goName').disabled = false; $('#goSubmit').disabled = false;
-  loadBoard();
-}
-async function submitScore(e) {
-  e.preventDefault();
-  if (boardSent || !st || human < 0) return;
-  const name = $('#goName').value.trim().slice(0, 20);
-  if (!name) { $('#goBoardMsg').textContent = 'Enter a name to submit your score.'; return; }
-  const P = st.players[human];
-  const body = { name, tribe: P.tribe, score: TT.score(st, human) || (P.scoreHist[P.scoreHist.length - 1] || 0), turn: st.turn, mode: st.settings.mode, difficulty: st.settings.difficulty, won: !!(st.over && st.over.winner === human) };
-  $('#goSubmit').disabled = true;
-  try {
-    const r = await fetch('/api/scores', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
-    const j = await r.json().catch(() => ({}));
-    if (!r.ok) throw new Error(j.error || 'HTTP ' + r.status);
-    boardSent = true; store.set('name', name);
-    $('#goName').disabled = true;
-    $('#goBoardMsg').textContent = 'Score saved.';
-    loadBoard(body);
-  } catch (err) { $('#goSubmit').disabled = false; $('#goBoardMsg').textContent = 'Could not save: ' + err.message; }
+  recordResult();
 }
 const SVGNS = 'http://www.w3.org/2000/svg';
 function sv(tag, attrs) { const el = document.createElementNS(SVGNS, tag); for (const k in attrs) el.setAttribute(k, attrs[k]); return el; }
@@ -1604,13 +1547,14 @@ function bindUI() {
   $('#pauseCodex').addEventListener('click', () => { $('#pause').hidden = true; openCodex(); });
   $('#pauseQuit').addEventListener('click', () => { $('#pause').hidden = true; save(); token++; busy = false; leaveOnline(); showMenu(); });
   $('#lbCopy').addEventListener('click', () => { const v = $('#lbLink').value; navigator.clipboard.writeText(v).then(() => toast('Invite link copied.'), () => { $('#lbLink').select(); toast('Select and copy the link.'); }); });
-  $('#lbLeave').addEventListener('click', () => { leaveOnline(); showMenu(); });
-  $('#lbStart').addEventListener('click', async () => { if (!lobbyInfo) return; try { await roomApi('POST', { op: 'start', id: lobbyInfo.id, clientId: lobbyInfo.clientId }); pollLobby(); } catch (e) { toast(e.message); } });
+  $('#lbLeave').addEventListener('click', () => { const L = lobby; closeLobby(); if (L) ON.leaveRoom(L.id).catch(() => {}); clearRoomUrl(); showMenu(); });
+  $('#lbStart').addEventListener('click', async () => { const L = lobby; if (!L) return; try { await ON.startRoom(L.id); refreshLobby(L); } catch (e) { toast(e.message); } });
+  bindSearch($('#lbFind'), $('#lbFound'), lobbyInviteBtn);
+  $('#pfClose').addEventListener('click', () => { $('#profile').hidden = true; });
   $('#speedSel').addEventListener('change', e => { prefs.speed = e.target.value; savePrefs(); R3.setOptions({ speed: SPEED[prefs.speed] }); });
   $('#followChk').addEventListener('change', e => { prefs.follow = e.target.checked; R3.follow = prefs.follow; savePrefs(); });
   $('#codexClose').addEventListener('click', () => { $('#codex').hidden = true; });
   $('#btnHelpMenu').addEventListener('click', openCodex);
-  $('#goForm').addEventListener('submit', submitScore);
   $('#goNew').addEventListener('click', () => { $('#gameover').hidden = true; token++; showMenu(); });
   $('#goWatch').addEventListener('click', () => { $('#gameover').hidden = true; R3.setViewer(-1); });
   $('#camIn').addEventListener('click', () => R3.zoom(0.8));
@@ -1621,93 +1565,426 @@ function bindUI() {
 }
 
 // debug / automation hook
-G.__tessera = { get state() { return st; }, get R3() { return R3; }, get human() { return human; }, get busy() { return busy; }, get canAct() { return !!st && canAct(); }, get mode() { return mode; }, get netBase() { return net ? net.base : -1; }, get pending() { return net ? net.outbox.length : 0; }, netStats, joinRoom, createRoom, click: onTileClick, endTurn, showTech, selectNextUnit, newGame, prefs, act, setup: () => setup, select: s => { sel = s; refresh(); } };
+G.__tessera = { get state() { return st; }, get R3() { return R3; }, get human() { return human; }, get busy() { return busy; }, get canAct() { return !!st && canAct(); }, get mode() { return mode; }, get netBase() { return net ? net.base : -1; }, get pending() { return net ? net.outbox.length : 0; }, get room() { return net ? net.id : null; }, get lobby() { return lobby ? lobby.id : null; }, get searching() { return !!search; }, get lastRecord() { return lastRecord; }, get onlineOK() { return onlineOK; }, netStats, online: TT.Online, click: onTileClick, endTurn, showTech, selectNextUnit, newGame, prefs, act, setup: () => setup, select: s => { sel = s; refresh(); }, openProfile, startSearch, stopSearch, createRoom, joinByCode, enterOnline };
 
-// ---------------------------------------------------------------- online play (needs the Vercel backend with storage)
-// Every client replays the same command log from the same seed, so the server only stores and orders moves.
-let roomsOK = null, lobbyInfo = null, lobbyTimer = 0;
-async function roomApi(method, body, query) {
-  const url = '/api/room' + (query ? '?' + new URLSearchParams(query) : '');
-  const r = await fetch(url, method === 'GET' ? { cache: 'no-store' } : { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
-  const j = await r.json().catch(() => ({}));
-  if (!r.ok) { const e = new Error(j.error || 'Network error ' + r.status); e.status = r.status; e.data = j; throw e; }
-  return j;
-}
-function makeNet(info) { return { id: info.id, clientId: info.clientId, seat: info.seat, cid8: info.clientId.slice(0, 8), base: 0, outbox: [], applying: false, chain: Promise.resolve(), sysq: [], forceBots: false, room: null, final: null, lastProgress: performance.now() }; }
-function playerName() { const v = ($('#onName') && $('#onName').value.trim()) || store.get('name', ''); if (v) store.set('name', v.slice(0, 20)); return v.slice(0, 20); }
-function rememberRoom(r) { store.set('room:' + r.id, { clientId: r.clientId, seat: r.seat }); }
+// ---------------------------------------------------------------- online play (Supabase): Google accounts, matching, invites, rooms
+// Every device replays the same move log from the same seed, so the server only stores and orders moves.
+const ON = TT.Online;
+let onlineOK = false, lobby = null, search = null, lastRecord = null, myRooms = [], invites = [];
+const clearRoomUrl = () => { try { history.replaceState(null, '', location.pathname); } catch (e) { /* sandboxed */ } };
+const roomUrl = code => { try { history.replaceState(null, '', location.pathname + '?room=' + code); } catch (e) { /* sandboxed */ } };
 
-async function createRoom() {
-  const name = playerName();
-  if (!name) { toast('Enter your name first.'); $('#onName') && $('#onName').focus(); return; }
-  prefs.setup = setup; savePrefs();
-  try { const r = await roomApi('POST', { op: 'create', name, tribe: setup.tribe, settings: setup }); rememberRoom(r); openLobby(r); }
-  catch (e) { toast('Could not create a room: ' + e.message); }
+async function onlineBoot() {
+  if (!ON.available()) return;
+  try { await ON.init(); onlineOK = true; } catch (e) { console.error(e); return; }
+  ON.on('auth', () => { refreshOnlineHome(); loadInvites(); });
+  ON.on('presence', () => { document.querySelectorAll('[data-uid]').forEach(markOnline); const c = $('#onCount'); if (c) c.textContent = ON.online.size > 1 ? ON.online.size + ' players online' : ''; });
+  ON.on('invite', () => loadInvites());
+  ON.on('match', roomId => { if (search) matchFound(roomId); });
+  setInterval(() => { if (search) updateMatchStatus(); }, 1000);
+  setInterval(() => { if (ON.profile && !(mode === 'online' && net && st && !st.over)) loadInvites(); }, 20000);   // in case realtime is down
+  refreshOnlineHome();
+  loadInvites();
+  const code = new URLSearchParams(location.search).get('room');
+  if (code) {
+    setup.playMode = 'online';
+    if (ON.profile) joinByCode(code);
+    else { store.set('pendingRoom', code.toUpperCase()); refreshOnlineHome(); toast((ON.user ? 'Pick a player name' : 'Sign in') + ' to join room ' + code.toUpperCase() + '.'); }
+  }
 }
-async function joinRoom(code) {
+async function refreshOnlineHome() {
+  myRooms = [];
+  if (ON.profile) { try { myRooms = await ON.myRooms(); } catch (e) { myRooms = []; } }
+  if (!$('#menu').hidden) { if (menuRefs.online) menuRefs.online._sig = ''; syncMenu(); }
+}
+function avatarOf(tribe, size) {
+  const T0 = TT.tribe(tribe) || TT.TRIBES[0];
+  return h('span', { class: 'pav', style: '--tc:' + hex(T0.color) + ';width:' + size + 'px;height:' + size + 'px' }, art({ kind: 'unit', type: 'warrior', color: T0.color, tribe: T0.id, pad: 1 }, size));
+}
+function googleMark() {
+  const w = document.createElement('span');
+  w.innerHTML = '<svg viewBox="0 0 48 48" aria-hidden="true"><path fill="#EA4335" d="M24 9.5c3.5 0 6.6 1.2 9.1 3.6l6.8-6.8C35.8 2.4 30.3 0 24 0 14.6 0 6.6 5.4 2.7 13.2l7.9 6.2C12.4 13.7 17.7 9.5 24 9.5z"/><path fill="#4285F4" d="M46.1 24.6c0-1.6-.1-3.1-.4-4.6H24v9h12.4c-.5 2.9-2.2 5.3-4.6 6.9l7.4 5.7c4.3-4 6.9-9.9 6.9-17z"/><path fill="#FBBC05" d="M10.6 28.6A14.5 14.5 0 0 1 9.5 24c0-1.6.3-3.2.8-4.6l-7.9-6.2A24 24 0 0 0 0 24c0 3.9.9 7.5 2.6 10.8l8-6.2z"/><path fill="#34A853" d="M24 48c6.5 0 11.9-2.1 15.9-5.8l-7.4-5.7c-2.1 1.4-4.8 2.3-8.5 2.3-6.3 0-11.6-4.2-13.5-9.9l-8 6.2C6.6 42.6 14.6 48 24 48z"/></svg>';
+  return w.firstChild;
+}
+
+// title-screen online panel; redrawn only when the account, rooms or search state change (keeps typing intact)
+function renderOnlinePanel(el) {
+  const sig = [onlineOK, ON.user && ON.user.id, ON.profile && ON.profile.username + ON.profile.avatar_tribe, myRooms.map(r => r.id + r.status).join(','), !!search, setup.matchSize].join('|');
+  if (el._sig === sig) { updateMatchStatus(); return; }
+  el._sig = sig;
+  el.innerHTML = '';
+  menuRefs.matchStatus = null;
+  if (!ON.user) {
+    el.append(h('div', { class: 'oncard' }, h('p', null, 'Play people on other devices, keep a record of every game, and find friends by name.'),
+      h('button', { class: 'gbtn', id: 'btnGoogle', type: 'button', onclick: () => ON.signInGoogle(store.get('pendingRoom', '')).catch(e => toast(e.message)) }, googleMark(), 'Sign in with Google')));
+    return;
+  }
+  if (!ON.profile) {
+    const meta = ON.user.user_metadata || {};
+    const guess = String(meta.name || meta.full_name || '').replace(/[^A-Za-z0-9_]/g, '').slice(0, 16);
+    const inp = h('input', { id: 'onName', maxlength: '16', placeholder: 'Player name', autocomplete: 'nickname', value: guess.length >= 3 ? guess : '' });
+    const save = async () => {
+      try {
+        await ON.claimUsername(inp.value.trim(), setup.tribe);
+        toast('Welcome, ' + ON.profile.username + '!');
+        const pend = store.get('pendingRoom', '');
+        if (pend) { store.del('pendingRoom'); joinByCode(pend); }
+      } catch (e) { toast(e.message); }
+    };
+    inp.addEventListener('keydown', e => { if (e.key === 'Enter') save(); });
+    el.append(h('div', { class: 'oncard' }, h('label', { class: 'lbl', for: 'onName' }, 'Pick a player name'),
+      h('div', { class: 'onrow' }, inp, h('button', { class: 'btn primary', id: 'btnClaim', type: 'button', onclick: save }, 'Save')),
+      h('p', { class: 'note' }, '3 to 16 letters, digits or _. Friends find you by this name.'),
+      h('button', { class: 'btn ghost small', type: 'button', onclick: () => ON.signOut() }, 'Use another Google account')));
+    return;
+  }
+  const P = ON.profile, on = (P.totals && P.totals.online) || { games: 0, wins: 0 };
+  el.append(h('div', { class: 'merow' },
+    h('button', { class: 'mechip', id: 'btnProfile', type: 'button', onclick: () => openProfile(null) }, avatarOf(P.avatar_tribe, 40), h('span', { class: 'mc-t' }, h('b', null, P.username), h('small', null, on.wins + (on.wins === 1 ? ' win · ' : ' wins · ') + on.games + ' online games'))),
+    h('span', { class: 'onlinecount', id: 'onCount' }, ON.online.size > 1 ? ON.online.size + ' players online' : '')));
+  const size = setup.matchSize || 2;
+  menuRefs.matchStatus = h('div', { class: 'matchst', id: 'matchStatus', hidden: true });
+  el.append(h('div', { class: 'row' }, h('div', { class: 'rowh' }, h('span', { class: 'lbl' }, 'Quick match'), h('span', { class: 'rowval' }, 'Random opponents · 30 turns')),
+    h('div', { class: 'modeseg three', role: 'radiogroup', 'aria-label': 'Players in the match' }, [[2, '1 v 1'], [3, '3 players'], [4, '4 players']].map(([k, nm]) =>
+      h('button', { type: 'button', role: 'radio', class: 'mseg' + (k === size ? ' on' : ''), 'aria-checked': String(k === size), id: 'msize-' + k, disabled: !!search, onclick: () => { setup.matchSize = k; saveSetup(); syncMenu(); } }, nm))),
+    menuRefs.matchStatus));
+  const found = h('ul', { class: 'plist', id: 'onResults' });
+  const q = h('input', { id: 'onSearch', type: 'search', placeholder: 'Find a player by name', autocomplete: 'off', maxlength: '16', 'aria-label': 'Find a player by name' });
+  bindSearch(q, found, p => h('button', { class: 'btn', type: 'button', onclick: () => inviteToNewRoom(p) }, icon('mail'), 'Invite'));
+  const code = h('input', { id: 'onCode', maxlength: '8', placeholder: 'Room code', autocomplete: 'off', class: 'code', 'aria-label': 'Room code' });
+  code.addEventListener('keydown', e => { if (e.key === 'Enter') joinByCode(code.value); });
+  el.append(h('div', { class: 'row' }, h('div', { class: 'rowh' }, h('span', { class: 'lbl' }, 'Play with friends')), q, found,
+    h('div', { class: 'onrow' }, code, h('button', { class: 'btn', id: 'btnJoin', type: 'button', onclick: () => joinByCode(code.value) }, 'Join'))));
+  if (myRooms.length) el.append(h('div', { class: 'row' }, h('div', { class: 'rowh' }, h('span', { class: 'lbl' }, 'Your games')),
+    h('ul', { class: 'plist', id: 'myRooms' }, myRooms.map(r => h('li', null,
+      h('span', { class: 'pl-t' }, h('b', null, r.status === 'playing' ? (r.kind === 'match' ? 'Match in progress' : 'Game in progress') : 'Room ' + r.code), h('small', null, (r.players || []).map(p => p.username).join(', '))),
+      h('span'), h('button', { class: 'btn', type: 'button', onclick: () => (r.status === 'playing' ? enterOnline(r.id) : openLobby(r.id)) }, r.status === 'playing' ? 'Rejoin' : 'Open'))))));
+  updateMatchStatus();
+}
+function playerRow(p, action) {
+  const li = h('li', { 'data-uid': p.id },
+    h('button', { class: 'pl-who', type: 'button', onclick: () => openProfile(p.username) }, avatarOf(p.avatar_tribe, 34), h('span', { class: 'pl-t' }, h('b', null, p.username), h('small', null, (p.wins || 0) + ' wins · ' + (p.games || 0) + ' games'))),
+    h('span', { class: 'dot' }), action || h('span'));
+  markOnline(li);
+  return li;
+}
+function markOnline(li) {
+  const d = li.querySelector('.dot');
+  if (!d) return;
+  const s = ON.online.get(li.dataset.uid);
+  d.classList.toggle('on', !!s);
+  d.textContent = s ? (s.status === 'playing' ? 'In a game' : s.status === 'searching' ? 'Searching' : 'Online') : '';
+  d.title = s ? d.textContent : 'Offline';
+}
+function bindSearch(input, list, actionFor) {
+  let t = 0, seq = 0;
+  input.addEventListener('input', () => {
+    clearTimeout(t);
+    const q = input.value.trim();
+    if (!q) { seq++; list.innerHTML = ''; return; }
+    t = setTimeout(async () => {
+      const my = ++seq;
+      try {
+        const rows = await ON.searchPlayers(q);
+        if (my !== seq) return;
+        list.innerHTML = '';
+        if (!rows.length) list.append(h('li', { class: 'empty' }, 'Nobody called “' + q + '” yet.'));
+        rows.forEach(p => list.append(playerRow(p, actionFor(p))));
+      } catch (e) { if (my === seq) { list.innerHTML = ''; list.append(h('li', { class: 'empty' }, e.message)); } }
+    }, 250);
+  });
+}
+
+// ---- quick match
+function startSearch() {
+  if (!ON.profile || search) return;
+  search = { size: setup.matchSize || 2, since: Date.now(), timer: 0, allowBots: false, busy: false, waiting: 1 };
+  ON.setStatus('searching');
+  syncMenu();
+  pollMatch();
+}
+async function pollMatch() {
+  const s = search;
+  if (!s) return;
+  clearTimeout(s.timer);
+  if (!s.busy) {
+    s.busy = true;
+    try {
+      const r = await ON.findMatch(s.size, setup.tribe, s.allowBots);
+      if (r && r.room_id) { if (search === s) matchFound(r.room_id); else { toast('A match was found just as you cancelled.'); enterOnline(r.room_id); } return; }
+      s.waiting = (r && r.waiting) || 1;
+    } catch (e) { s.busy = false; toast(e.message); stopSearch(); return; }
+    s.busy = false;
+  }
+  if (search !== s) return;
+  updateMatchStatus();
+  s.timer = setTimeout(pollMatch, 4000);   // also a heartbeat: the server only matches people who checked in recently
+}
+function matchFound(roomId) {
+  const s = search;
+  if (s) { clearTimeout(s.timer); search = null; }
+  toast('Match found!');
+  enterOnline(roomId);
+}
+async function stopSearch() {
+  const s = search;
+  if (!s) return;
+  search = null;
+  clearTimeout(s.timer);
+  ON.setStatus('menu');
+  if (!$('#menu').hidden) syncMenu();
+  try { await ON.cancelMatch(); } catch (e) { /* offline: the server forgets searchers after 15 seconds */ }
+}
+function updateMatchStatus() {
+  const el = menuRefs.matchStatus;
+  if (!el) return;
+  el.hidden = !search;
+  if (!search) return;
+  const s = search, secs = Math.floor((Date.now() - s.since) / 1000), need = s.size - (s.waiting || 1);
+  el.innerHTML = '';
+  el.append(h('span', { class: 'spin', 'aria-hidden': 'true' }), h('span', null, (need > 0 ? 'Looking for ' + need + ' more player' + (need > 1 ? 's' : '') : 'Starting…') + ' · ' + Math.floor(secs / 60) + ':' + String(secs % 60).padStart(2, '0')));
+  if (s.size > 2 && (s.waiting || 1) >= 2 && secs >= 20 && !s.allowBots) el.append(h('button', { class: 'btn', type: 'button', id: 'btnBotsNow', onclick: () => { s.allowBots = true; pollMatch(); } }, 'Start now with bots'));
+}
+
+// ---- private rooms
+const roomSettings = () => ({ opponents: setup.opponents, size: setup.size, mapType: setup.mapType, difficulty: setup.difficulty, mode: setup.mode, relief: setup.relief, fog: setup.fog, events: setup.events, dayCycle: setup.dayCycle });
+async function createRoom(invitee) {
+  if (!ON.profile) return;
+  if (search) await stopSearch();
+  try {
+    const r = await ON.createRoom(roomSettings(), setup.tribe);
+    if (invitee) { try { await ON.invite(r.room_id, invitee.id); toast('Invited ' + invitee.username + '.'); } catch (e) { toast(e.message); } }
+    openLobby(r.room_id);
+  } catch (e) { toast(e.message); }
+}
+function inviteToNewRoom(p) {
+  if (lobby) { ON.invite(lobby.id, p.id).then(() => { toast('Invited ' + p.username + '.'); refreshLobby(lobby); }, e => toast(e.message)); return; }
+  createRoom(p);
+}
+async function joinByCode(code) {
   code = String(code || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
   if (!code) { toast('Enter the room code from your invite.'); return; }
-  const saved = store.get('room:' + code, null);
-  const name = playerName();
-  if (!name && !saved) { toast('Enter your name first.'); $('#onName') && $('#onName').focus(); return; }
-  try { const r = await roomApi('POST', { op: 'join', id: code, name, tribe: setup.tribe, clientId: saved && saved.clientId }); rememberRoom(r); openLobby(r); }
-  catch (e) { toast(e.message); }
+  if (!ON.profile) { store.set('pendingRoom', code); setup.playMode = 'online'; if (!$('#menu').hidden) syncMenu(); toast((ON.user ? 'Pick a player name' : 'Sign in') + ' to join room ' + code + '.'); return; }
+  try { const r = await ON.joinRoom(code, setup.tribe); if (r.rejoined) enterOnline(r.room_id); else openLobby(r.room_id); }
+  catch (e) { toast(e.message); clearRoomUrl(); }
 }
-function openLobby(info) {
-  lobbyInfo = info;
-  attract = false; token++;
+function openLobby(roomId) {
+  closeLobby();
   $('#menu').hidden = true;
   $('#lobby').hidden = false;
-  $('#lbCode').textContent = info.id;
-  const link = location.origin + location.pathname + '?room=' + info.id;
-  $('#lbLink').value = link;
-  try { history.replaceState(null, '', location.pathname + '?room=' + info.id); } catch (e) { /* sandboxed */ }
-  pollLobby();
+  $('#lbFind').value = ''; $('#lbFound').innerHTML = ''; $('#lbMsg').textContent = '';
+  const L = lobby = { id: roomId, info: null, unwatch: null, timer: 0 };
+  L.unwatch = ON.watchRoom(roomId, { seats: () => refreshLobby(L), room: () => refreshLobby(L) });
+  ON.setStatus('menu');
+  refreshLobby(L);
 }
-function closeLobby() { clearTimeout(lobbyTimer); lobbyInfo = null; $('#lobby').hidden = true; }
-async function pollLobby() {
-  clearTimeout(lobbyTimer);
-  const info = lobbyInfo;
-  if (!info) return;
+async function refreshLobby(L) {
+  if (!L || lobby !== L) return;
+  clearTimeout(L.timer);
   try {
-    const j = await roomApi('GET', null, { id: info.id, from: 0, clientId: info.clientId });
-    if (lobbyInfo !== info) return;
-    if (j.room.status === 'playing') { closeLobby(); await enterOnline(info, j); return; }
-    renderLobby(j.room, info);
+    const info = await ON.roomInfo(L.id);
+    if (lobby !== L) return;
+    L.info = info;
+    if (info.room.status === 'playing') { closeLobby(); enterOnline(L.id); return; }
+    if (info.room.status !== 'lobby') { closeLobby(); clearRoomUrl(); toast('That room was closed.'); showMenu(); return; }
+    if (!info.players.some(p => p.user_id === ON.user.id)) { closeLobby(); clearRoomUrl(); toast('You are no longer in that room.'); showMenu(); return; }
+    renderLobby(L);
   } catch (e) { $('#lbMsg').textContent = e.message; }
-  lobbyTimer = setTimeout(pollLobby, 1200);
+  L.timer = setTimeout(() => refreshLobby(L), 5000);   // realtime usually gets here first
 }
-function renderLobby(room, info) {
-  const host = info.seat === 0;
-  const seats = $('#lbSeats'); seats.innerHTML = '';
-  const taken = new Set(room.seats.filter(s => s.claimed && s.pid !== info.seat).map(s => s.tribe));
-  room.seats.forEach(s => {
-    const T0 = s.tribe ? TT.tribe(s.tribe) : null;
-    const av = T0 ? art({ kind: 'unit', type: 'warrior', color: T0.color, tribe: T0.id, pad: 1 }, 40) : icon(s.claimed ? 'users' : 'plus');
-    seats.append(h('li', { class: (s.claimed ? 'on' : 'open') + (s.mine ? ' me' : ''), style: '--tc:' + hex(T0 ? T0.color : 0x5a5d8a) },
-      h('span', { class: 'sav' }, av),
-      h('span', { class: 'snm' }, s.claimed ? s.name : 'Open seat', h('small', null, s.claimed ? (T0 ? T0.name : '') + (s.pid === 0 ? ' · host' : '') + (s.mine ? ' · you' : '') : 'Invite a friend, or a bot will play')),
-    ));
-  });
-  const pick = $('#lbTribes'); pick.innerHTML = '';
-  const me = room.seats[info.seat];
+function closeLobby() {
+  const L = lobby;
+  if (!L) return;
+  lobby = null;
+  clearTimeout(L.timer);
+  if (L.unwatch) L.unwatch();
+  $('#lobby').hidden = true;
+}
+function renderLobby(L) {
+  const room = L.info.room, players = L.info.players, pend = L.info.invites || [];
+  const me = players.find(p => p.user_id === ON.user.id), host = room.host === ON.user.id;
+  $('#lbCode').textContent = room.code;
+  $('#lbLink').value = location.origin + location.pathname + '?room=' + room.code;
+  roomUrl(room.code);
+  const seats = $('#lbSeats');
+  seats.innerHTML = '';
+  for (let s = 0; s < room.seat_count; s++) {
+    const p = players.find(x => x.seat === s), T0 = p ? TT.tribe(p.tribe) : null;
+    seats.append(h('li', { class: (p ? 'on' : 'open') + (p && p.user_id === ON.user.id ? ' me' : ''), style: '--tc:' + hex(T0 ? T0.color : 0x5a5d8a), 'data-uid': p ? p.user_id : null },
+      h('span', { class: 'sav' }, T0 ? art({ kind: 'unit', type: 'warrior', color: T0.color, tribe: T0.id, pad: 1 }, 40) : icon('plus')),
+      h('span', { class: 'snm' }, p ? p.username : 'Open seat', h('small', null, p ? T0.name + (p.user_id === room.host ? ' · host' : '') + (p.user_id === ON.user.id ? ' · you' : '') : 'A bot plays this seat unless someone joins')),
+      p ? h('span', { class: 'dot' }) : h('span')));
+  }
+  seats.querySelectorAll('[data-uid]').forEach(markOnline);
+  if (pend.length) seats.append(h('li', { class: 'pend' }, h('span', { class: 'sav' }, icon('mail')), h('span', { class: 'snm' }, 'Invited', h('small', null, pend.map(i => i.username).join(', '))), h('span')));
+  const taken = new Set(players.filter(p => p.user_id !== ON.user.id).map(p => p.tribe));
+  const pick = $('#lbTribes');
+  pick.innerHTML = '';
   TT.TRIBES.forEach(t => pick.append(h('button', { type: 'button', class: 'opt av-opt' + (me && me.tribe === t.id ? ' on' : ''), disabled: taken.has(t.id), style: '--tc:' + hex(t.color), 'aria-label': t.name,
-    onclick: async () => { try { await roomApi('POST', { op: 'tribe', id: info.id, clientId: info.clientId, tribe: t.id }); pollLobby(); } catch (e) { toast(e.message); } } },
+    onclick: async () => { try { await ON.setTribe(room.id, t.id); setup.tribe = t.id; saveSetup(); refreshLobby(L); } catch (e) { toast(e.message); } } },
     h('span', { class: 'av-c' }, art({ kind: 'unit', type: 'warrior', color: t.color, tribe: t.id, pad: 1 }, 40)), h('span', { class: 'opt-n' }, t.name))));
-  const people = room.seats.filter(s => s.claimed).length, open = room.seats.length - people;
-  $('#lbSub').textContent = people + (people === 1 ? ' person' : ' people') + (open ? ' · ' + open + ' open seat' + (open > 1 ? 's' : '') : '') + ' · ' + TT.MAP_TYPES[room.settings.mapType].name + ' · ' + cap(room.settings.size);
+  renderLobbySettings(L, host);
+  const people = players.length, open = room.seat_count - people;
+  $('#lbSub').textContent = people + (people === 1 ? ' player' : ' players') + (open ? ' · ' + open + ' open seat' + (open > 1 ? 's' : '') : '');
   $('#lbStart').hidden = !host;
   $('#lbStart').textContent = open ? 'Start (' + open + ' bot' + (open > 1 ? 's' : '') + ')' : 'Start game';
-  $('#lbMsg').textContent = host ? 'Share the link. Start whenever everyone is in.' : 'Waiting for the host to start…';
+  $('#lbMsg').textContent = host ? 'Invite players by name or share the link. Start when everyone is in.' : 'Waiting for ' + (room.host_name || 'the host') + ' to start…';
 }
-async function enterOnline(info, j) {
-  const final = j.room.final;
-  const s0 = TT.newGame(final);
-  const n = makeNet(info); n.final = final; n.room = j.room;
-  for (const e of j.log) applyEntryInstant(s0, e);
-  n.base = j.len;
-  const seats = new Set(!s0.players[info.seat].isAI ? [info.seat] : []);
+function renderLobbySettings(L, host) {
+  const s = L.info.room.settings, box = $('#lbSettings');
+  box.innerHTML = '';
+  if (!host) { box.append(h('div', { class: 'lbl' }, 'World'), h('p', { class: 'note' }, TT.MAP_TYPES[s.mapType].name + ' · ' + cap(s.size) + ' · ' + (s.mode === 'score' ? '30-turn score' : 'Domination') + ' · ' + TT.DIFFICULTY[s.difficulty].name + ' bots')); return; }
+  const upd = async patch => { try { await ON.updateRoom(L.id, Object.assign({}, s, patch)); } catch (e) { toast(e.message); } refreshLobby(L); };
+  const sel = (id, label, opts, val, apply) => h('label', { class: 'lbsel' }, h('span', { class: 'lbl' }, label), h('select', { id, onchange: e => apply(e.target.value) }, opts.map(([v, t]) => h('option', { value: v, selected: String(v) === String(val) }, t))));
+  const minSeats = Math.max(2, ...L.info.players.map(p => p.seat + 1));
+  box.append(h('div', { class: 'lbl' }, 'World'), h('div', { class: 'lbsets' },
+    sel('lbMap', 'Map', Object.keys(TT.MAP_TYPES).map(k => [k, TT.MAP_TYPES[k].name]), s.mapType, v => upd({ mapType: v })),
+    sel('lbSize', 'Size', Object.keys(TT.MAP_SIZES).map(k => [k, cap(k)]), s.size, v => upd({ size: v })),
+    sel('lbSeatsN', 'Seats', [2, 3, 4, 5, 6].filter(n => n >= minSeats).map(n => [n - 1, n + ' seats']), s.opponents, v => upd({ opponents: +v })),
+    sel('lbBots', 'Bots', Object.keys(TT.DIFFICULTY).map(k => [k, TT.DIFFICULTY[k].name]), s.difficulty, v => upd({ difficulty: v })),
+    sel('lbMode', 'Victory', [['domination', 'Domination'], ['score', '30-turn score']], s.mode, v => upd({ mode: v }))));
+}
+function lobbyInviteBtn(p) {
+  const b = h('button', { class: 'btn', type: 'button', onclick: async () => {
+    if (!lobby) return;
+    b.disabled = true;
+    try { await ON.invite(lobby.id, p.id); b.textContent = 'Invited'; refreshLobby(lobby); } catch (e) { b.disabled = false; toast(e.message); }
+  } }, icon('mail'), 'Invite');
+  return b;
+}
+
+// ---- invitations (arrive in real time, shown wherever you are)
+async function loadInvites() {
+  invites = [];
+  if (ON.profile) { try { invites = await ON.myInvites(); } catch (e) { invites = []; } }
+  renderInviteBar();
+}
+function renderInviteBar() {
+  const bar = $('#inviteBar'), inv = invites.find(i => !lobby || i.room_id !== lobby.id);
+  if (!inv) { bar.hidden = true; return; }
+  bar.innerHTML = '';
+  bar.append(avatarOf(inv.from_tribe, 40), h('span', { class: 'ib-t' }, h('b', null, inv.from + ' invited you'), h('small', null, inv.taken + ' of ' + inv.seats + ' seats taken · ' + ((TT.MAP_TYPES[inv.settings.mapType] || {}).name || ''))),
+    h('button', { class: 'btn primary', id: 'ibJoin', type: 'button', onclick: () => acceptInvite(inv) }, 'Join'),
+    h('button', { class: 'btn ghost', id: 'ibNo', type: 'button', onclick: () => declineInvite(inv) }, 'Decline'));
+  bar.hidden = false;
+}
+async function acceptInvite(inv) {
+  if (mode === 'online' && net && st && !st.over) { toast('Finish or leave this game first.'); return; }
+  try {
+    const r = await ON.respondInvite(inv.id, true, setup.tribe);
+    invites = invites.filter(i => i.id !== inv.id);
+    renderInviteBar();
+    if (search) await stopSearch();
+    if (st && !attract && mode === 'solo') save();
+    token++; busy = false;
+    openLobby(r.room_id);
+  } catch (e) { toast(e.message); loadInvites(); }
+}
+function declineInvite(inv) {
+  invites = invites.filter(i => i.id !== inv.id);
+  renderInviteBar();
+  ON.respondInvite(inv.id, false).catch(() => {});
+}
+
+// ---- profiles and the leaderboard
+async function openProfile(username) {
+  const b = $('#pfBody');
+  $('#profile').hidden = false;
+  b.innerHTML = '';
+  b.append(h('p', { class: 'note' }, 'Loading…'));
+  let P = null;
+  try { P = username ? await ON.profileOf(username) : await ON.reloadProfile(); }
+  catch (e) { b.innerHTML = ''; b.append(h('p', { class: 'note' }, e.message)); return; }
+  if (!P) { b.innerHTML = ''; b.append(h('p', { class: 'note' }, 'No player with that name.')); return; }
+  renderProfile(P);
+}
+function renderProfile(P) {
+  const b = $('#pfBody');
+  b.innerHTML = '';
+  const tot = k => Object.assign({ games: 0, wins: 0, best: 0, left: 0 }, P.totals && P.totals[k]);
+  const on = tot('online'), so = tot('solo');
+  const pct = (w, g) => (g ? Math.round(w / g * 100) + '% won' : 'no games yet');
+  const tile = (label, big, small) => h('div', { class: 'pf-tile' }, h('span', { class: 'lbl' }, label), h('b', null, String(big)), h('small', null, small));
+  b.append(h('div', { class: 'pf-head' }, avatarOf(P.avatar_tribe, 64), h('div', null, h('h2', { id: 'pfTitle' }, P.username), h('span', { class: 'note' }, 'Playing since ' + new Date(P.created_at).toLocaleDateString(undefined, { month: 'short', year: 'numeric' })))));
+  b.append(h('div', { class: 'pf-tiles' },
+    tile('Online wins', on.wins, on.games + ' games · ' + pct(on.wins, on.games)),
+    tile('Wins vs bots', so.wins, so.games + ' games · ' + pct(so.wins, so.games)),
+    tile('Best score', Math.max(on.best || 0, so.best || 0) || '–', on.left ? on.left + ' online games left early' : 'any game')));
+  const grid = h('div', { class: 'pf-tribes' });
+  TT.TRIBES.forEach(t => {
+    const rows = (P.tribes || []).filter(x => x.tribe === t.id), g = rows.reduce((a, x) => a + x.games, 0), w = rows.reduce((a, x) => a + x.wins, 0);
+    const onl = rows.find(x => x.kind === 'online') || { games: 0, wins: 0 };
+    grid.append(h('div', { class: 'pf-tribe' + (g ? '' : ' none'), style: '--tc:' + hex(t.color), title: t.name + ': ' + w + ' wins in ' + g + ' games, ' + onl.wins + ' of ' + onl.games + ' online' },
+      avatarOf(t.id, 38), h('b', null, t.name), h('span', null, g ? w + (w === 1 ? ' win' : ' wins') + ' / ' + g : 'Not played'), h('i', { class: 'bar' }, h('i', { style: 'width:' + (g ? w / g * 100 : 0) + '%' }))));
+  });
+  b.append(h('div', { class: 'lbl' }, 'Victories by tribe'), grid);
+  const list = h('ul', { class: 'pf-recent' });
+  if (!(P.recent || []).length) list.append(h('li', { class: 'empty' }, 'No games recorded yet.'));
+  (P.recent || []).forEach(r => {
+    const opp = (r.opponents || []).map(o => o.username || ((TT.tribe(o.tribe) || {}).name || 'A') + ' bot');
+    list.append(h('li', null, h('span', { class: 'res ' + (r.left_game ? 'left' : r.won ? 'win' : 'loss') }, r.left_game ? 'Left' : r.won ? 'Win' : '#' + r.place),
+      avatarOf(r.tribe, 30),
+      h('span', { class: 'pf-g' }, h('b', null, (r.kind === 'online' ? 'Online' : 'Vs bots') + ' · ' + r.seats + ' tribes' + (r.kind === 'solo' && TT.DIFFICULTY[r.difficulty] ? ' · ' + TT.DIFFICULTY[r.difficulty].name : '')), h('small', null, 'vs ' + opp.join(', '))),
+      h('span', { class: 'pf-s' }, h('b', null, String(r.score)), h('small', null, 'turn ' + r.turns + ' · ' + new Date(r.ended_at).toLocaleDateString()))));
+  });
+  b.append(h('div', { class: 'lbl' }, 'Recent games'), list);
+  if (P.me) {
+    b.append(h('div', { class: 'lbl' }, 'Avatar'), h('div', { class: 'strip' }, TT.TRIBES.map(t => h('button', { type: 'button', class: 'opt av-opt' + (t.id === P.avatar_tribe ? ' on' : ''), style: '--tc:' + hex(t.color), 'aria-label': 'Avatar: ' + t.name,
+      onclick: async () => { try { renderProfile(await ON.setAvatar(t.id)); refreshOnlineHome(); } catch (e) { toast(e.message); } } }, h('span', { class: 'av-c' }, art({ kind: 'unit', type: 'warrior', color: t.color, tribe: t.id, pad: 1 }, 40)), h('span', { class: 'opt-n' }, t.name)))));
+    b.append(h('div', { class: 'actions' }, h('button', { class: 'btn', type: 'button', id: 'pfBoard', onclick: openBoard }, icon('trophy'), 'Leaderboard'),
+      h('button', { class: 'btn ghost', type: 'button', id: 'pfOut', onclick: async () => { $('#profile').hidden = true; if (search) await stopSearch(); await ON.signOut(); toast('Signed out.'); } }, icon('logout'), 'Sign out')));
+  } else {
+    b.append(h('div', { class: 'actions' }, h('button', { class: 'btn primary', type: 'button', id: 'pfInvite', onclick: () => { $('#profile').hidden = true; inviteToNewRoom({ id: P.id, username: P.username }); } }, icon('mail'), 'Invite to a game'),
+      h('button', { class: 'btn', type: 'button', onclick: openBoard }, icon('trophy'), 'Leaderboard')));
+  }
+}
+async function openBoard() {
+  const b = $('#pfBody');
+  b.innerHTML = '';
+  b.append(h('p', { class: 'note' }, 'Loading…'));
+  try {
+    const L = await ON.leaderboard();
+    b.innerHTML = '';
+    const row = (i, u, big, small) => h('li', null, h('span', { class: 'rk' }, String(i + 1)), avatarOf(u.avatar_tribe, 30), h('button', { class: 'pl-name', type: 'button', onclick: () => openProfile(u.username) }, u.username), h('span', { class: 'pf-s' }, h('b', null, String(big)), h('small', null, small)));
+    b.append(h('h2', { id: 'pfTitle' }, 'Leaderboard'),
+      h('div', { class: 'lbl' }, 'Most online wins'), h('ol', { class: 'pf-board' }, L.online.length ? L.online.map((u, i) => row(i, u, u.wins, u.games + ' games')) : h('li', { class: 'empty' }, 'No online games yet.')),
+      h('div', { class: 'lbl' }, 'Best scores vs bots'), h('ol', { class: 'pf-board' }, L.solo.length ? L.solo.map((u, i) => row(i, u, u.best, ((TT.tribe(u.tribe) || {}).name || '') + ' · ' + ((TT.DIFFICULTY[u.difficulty] || {}).name || ''))) : h('li', { class: 'empty' }, 'No games against bots yet.')),
+      h('div', { class: 'actions' }, h('button', { class: 'btn', type: 'button', onclick: () => openProfile(null) }, 'My profile')));
+  } catch (e) { b.innerHTML = ''; b.append(h('p', { class: 'note' }, e.message)); }
+}
+
+// ---- the game itself: replay the shared log, then follow it live
+function makeNet(room, seat, players) { return { id: room.id, code: room.code, seat, players, final: room.final, base: 0, outbox: [], applying: false, chain: Promise.resolve(), sysq: [], forceBots: false, lastProgress: performance.now(), wake: null, dirty: false, unwatch: null, ff: false }; }
+const wakeNet = n => { if (!n) return; n.dirty = true; if (n.wake) { const w = n.wake; n.wake = null; w(); } };
+async function pushEntries(n, base, entries) {
+  const r = await ON.pushMoves(n.id, base, entries);
+  if (r.conflict) { const e = new Error('Another move arrived first.'); e.status = 409; e.len = r.len; throw e; }
+  return r.len;
+}
+async function enterOnline(roomId) {
+  closeLobby();
+  if (search) { clearTimeout(search.timer); search = null; }
+  try {
+    const info = await ON.roomInfo(roomId);
+    const R = info.room, me = info.players.find(p => p.user_id === ON.user.id);
+    if (!me) { toast('You are not in that game.'); return; }
+    if (R.status === 'lobby') { openLobby(roomId); return; }
+    const moves = await ON.getMoves(roomId, 0);
+    const s0 = TT.newGame(R.final);
+    for (const e of moves) applyEntryInstant(s0, e);
+    const n = makeNet(R, me.seat, info.players);
+    n.base = moves.length;
+    startOnline(s0, n);
+  } catch (e) { toast(e.message); clearRoomUrl(); if ($('#menu').hidden && !st) showMenu(); }
+}
+function startOnline(s0, n) {
+  if (net && net.unwatch) net.unwatch();
+  const seats = new Set(!s0.players[n.seat].isAI ? [n.seat] : []);
+  roomUrl(n.code);
+  $('#inviteBar').hidden = true;
   startWith(s0, { mode: 'online', localSeats: seats, net: n });
+  n.unwatch = ON.watchRoom(n.id, { move: () => wakeNet(n) });
+  ON.setStatus('playing');
 }
 function applyEntryInstant(s, e) {
   if (e.sys) { s.players[e.seat].isAI = e.sys === 'botify'; return; }
@@ -1716,7 +1993,7 @@ function applyEntryInstant(s, e) {
 async function applyEntryLive(e) {
   const s0 = st, n = net;
   if (e.sys) {
-    const P = s0.players[e.seat], bot = e.sys === 'botify', who = (bot ? seatLabel(e.seat) : n && n.room && n.room.seats[e.seat] && n.room.seats[e.seat].name) || P.name;
+    const P = s0.players[e.seat], bot = e.sys === 'botify', pl = n && n.players.find(p => p.seat === e.seat), who = (pl && pl.username) || P.name;
     if (P.isAI === bot) return;
     P.isAI = bot;
     if (n && e.seat === n.seat) {
@@ -1751,34 +2028,35 @@ async function netWait(my) {
     if (!live()) return;
     if (n.forceBots && st.players[st.current].isAI) return;   // drive() runs this bot turn
     let got = 0;
+    n.dirty = false;
     try {
-      const j = await roomApi('GET', null, { id: n.id, from: n.base, log: 1 });
+      const from = n.base, log = await ON.getMoves(n.id, from);
       if (!live()) return;
-      const fresh = j.log.filter((e, i) => j.from + i >= n.base);
+      const len = from + log.length;
       // a requested seat change goes in right after what we just fetched (one round trip of race window, so it
       // can't starve while others keep moving); a stalled player who moved meanwhile keeps their seat
       let mine = null;
       while (n.sysq.length && !mine) {
         const q = n.sysq[0], P = st.players[q.seat];
-        if (P.isAI === (q.sys === 'botify') || !P.alive || (q.sys === 'botify' && fresh.some(e => !e.sys && e.seat === q.seat))) { n.sysq.shift(); continue; }
+        if (P.isAI === (q.sys === 'botify') || !P.alive || (q.sys === 'botify' && log.some(e => !e.sys && e.seat === q.seat))) { n.sysq.shift(); continue; }
         try {
-          const r = await roomApi('POST', { op: 'push', id: n.id, clientId: n.clientId, base: j.len, entries: [{ seat: q.seat, sys: q.sys, cmds: [], h: '' }] });
+          const nl = await pushEntries(n, len, [{ seat: q.seat, sys: q.sys, cmds: [], h: '' }]);
           if (!live()) return;
-          n.sysq.shift(); mine = { e: q, len: r.len };
+          n.sysq.shift(); mine = { e: q, len: nl };
         } catch (er) { if (!live()) return; if (er.status !== 409) { n.sysq.shift(); toast(er.message); } break; }   // 409: retry after the next fetch
       }
-      for (let i = 0; i < j.log.length; i++) {
-        const e = j.log[i];
-        if (j.from + i < n.base) continue;
-        if (e.cid !== n.cid8) {
+      for (let i = 0; i < log.length; i++) {
+        const e = log[i];
+        if (from + i < n.base) continue;
+        if (e.dev !== ON.dev) {
           // more than a couple of entries behind (bots ran fast, or the tab was asleep): skip animations to catch up
-          const ff = j.log.length - i - 1 > 1;
+          const ff = log.length - i - 1 > 1;
           if (ff !== !!n.ff) { n.ff = ff; R3.setOptions({ instant: ff }); }
           await applyEntryLive(e);
           if (!live()) return;
           if (!e.sys) n.forceBots = false;
         }
-        n.base = j.from + i + 1; got++;
+        n.base = from + i + 1; got++;
       }
       if (mine) { await applyEntryLive(mine.e); if (!live()) return; n.base = mine.len; got++; }
     } catch (e) {
@@ -1791,23 +2069,31 @@ async function netWait(my) {
     if (got) { n.lastProgress = performance.now(); take.hidden = true; renderRail(); return; }
     const idle = performance.now() - n.lastProgress, P = st.players[st.current], M = st.players[n.seat];
     if (n.sysq.length || n.forceBots) take.hidden = true;
-    else if (M.isAI && M.alive) { take.hidden = false; take.textContent = 'Take back my tribe'; take.onclick = () => { take.hidden = true; n.sysq.push({ seat: n.seat, sys: 'human' }); }; }
-    else if (P.isAI && idle > 25000) { take.hidden = false; take.textContent = 'Run the bots'; take.onclick = () => { take.hidden = true; n.forceBots = true; }; }
-    else if (!P.isAI && idle > (n.seat === 0 ? 60000 : 90000)) { const seat = st.current; take.hidden = false; take.textContent = 'Give this turn to a bot'; take.onclick = () => { take.hidden = true; n.sysq.push({ seat, sys: 'botify' }); }; }
-    for (let t = 0; t < 11 && live() && !n.sysq.length && !n.forceBots; t++) await sleep(100);
+    else if (M.isAI && M.alive) { take.hidden = false; take.textContent = 'Take back my tribe'; take.onclick = () => { take.hidden = true; n.sysq.push({ seat: n.seat, sys: 'human' }); wakeNet(n); }; }
+    else if (P.isAI && idle > 25000) { take.hidden = false; take.textContent = 'Run the bots'; take.onclick = () => { take.hidden = true; n.forceBots = true; wakeNet(n); }; }
+    else if (!P.isAI && idle > (n.seat === 0 ? 60000 : 90000)) { const seat = st.current; take.hidden = false; take.textContent = 'Give this turn to a bot'; take.onclick = () => { take.hidden = true; n.sysq.push({ seat, sys: 'botify' }); wakeNet(n); }; }
+    // realtime wakes us the moment a move lands; the timeout is the fallback when the socket is down
+    if (!n.dirty && !n.sysq.length && !n.forceBots) await Promise.race([new Promise(r => { n.wake = r; }), sleep(4000)]);
+    n.wake = null;
   }
 }
-// fetch entries we have not seen while pushing our own moves; false if any is a move or touches our seat (a real conflict)
-async function catchUp(n, seat) {
-  const j = await roomApi('GET', null, { id: n.id, from: n.base, log: 1 });
-  if (net !== n) return false;
-  const fresh = j.log.filter((e, i) => j.from + i >= n.base);
-  if (fresh.some(e => (!e.sys && e.cid !== n.cid8) || (e.sys && e.seat === seat))) return false;
-  for (const e of fresh) if (e.sys) await applyEntryLive(e);
-  n.base = j.len;
+// After a conflict while pushing our own moves: 'done' if our entry had in fact landed, 'retry' if only seat changes
+// slipped in first, false for a real conflict (someone else moved) that needs a resync.
+async function catchUp(n, seat, entry) {
+  const from = n.base, log = await ON.getMoves(n.id, from);
+  if (net !== n) return null;
+  const own = log.filter(e => !e.sys && e.dev === ON.dev);
+  if (own.length && log.every(e => e.sys || e.dev === ON.dev) && entry && JSON.stringify(own[own.length - 1].cmds) === JSON.stringify(entry.cmds)) {
+    for (const e of log) if (e.sys) await applyEntryLive(e);
+    n.base = from + log.length;
+    return 'done';
+  }
+  if (log.some(e => !e.sys || e.seat === seat)) return false;
+  for (const e of log) await applyEntryLive(e);
+  n.base = from + log.length;
   // someone took their seat back and now runs this bot turn: let them
   if (st.players[seat].isAI && !n.forceBots && !localSeats.has(botRunner(seat))) return false;
-  return true;
+  return 'retry';
 }
 // send our recorded moves; on a conflict, rebuild from the shared log
 function netFlush(seat) {
@@ -1815,15 +2101,22 @@ function netFlush(seat) {
   const entry = { seat, cmds: net.outbox.splice(0), h: TT.hash(st) };
   const n = net;
   n.chain = n.chain.then(async () => {
-    for (let attempt = 0; attempt < 4; attempt++) {
+    for (let attempt = 0; attempt < 5; attempt++) {
       if (net !== n) return;
-      try { const r = await roomApi('POST', { op: 'push', id: n.id, clientId: n.clientId, base: n.base, entries: [entry] }); n.base = r.len; n.lastProgress = performance.now(); netStats.pushed++; return; }
+      try { n.base = await pushEntries(n, n.base, [entry]); n.lastProgress = performance.now(); netStats.pushed++; return; }
       catch (e) {
-        if (e.status === 409) { netStats.conflicts++; if (net === n && await catchUp(n, seat).catch(() => false)) continue; await netResync('Another move arrived first.'); return; }
-        await sleep(800 * (attempt + 1));
+        if (net !== n) return;
+        if (e.status === 409) {
+          netStats.conflicts++;
+          const c = await catchUp(n, seat, entry).catch(() => null);
+          if (c === 'done') { netStats.pushed++; return; }
+          if (c === 'retry') continue;
+          if (c === false) { await netResync('Another move arrived first.'); return; }
+        }
+        await sleep(800 * (attempt + 1));   // network trouble: if the push landed anyway, the retry sees a conflict and catches up
       }
     }
-    toast('Could not reach the room. Reconnecting…');
+    toast('Could not reach the game. Reconnecting…');
     await netResync('Connection lost.');
   });
   return n.chain;
@@ -1834,21 +2127,59 @@ async function netResync(reason) {
   token++; netStats.resyncs++;
   toast(reason + ' Resyncing…');
   try {
-    const j = await roomApi('GET', null, { id: n.id, from: 0, clientId: n.clientId });
-    const s0 = TT.newGame(n.final);
-    for (const e of j.log) applyEntryInstant(s0, e);
-    const n2 = makeNet(n); n2.final = n.final; n2.room = j.room; n2.base = j.len;
-    const seats = new Set(!s0.players[n.seat].isAI ? [n.seat] : []);
-    startWith(s0, { mode: 'online', localSeats: seats, net: n2 });
+    const info = await ON.roomInfo(n.id);
+    const moves = await ON.getMoves(n.id, 0);
+    if (net !== n) return;
+    const s0 = TT.newGame(info.room.final);
+    for (const e of moves) applyEntryInstant(s0, e);
+    const n2 = makeNet(info.room, n.seat, info.players);
+    n2.base = moves.length;
+    startOnline(s0, n2);
   } catch (e) { toast('Resync failed: ' + e.message); setTimeout(() => { if (net === n) netResync('Retrying.'); }, 4000); }
 }
+// leaving on purpose hands your tribe to a bot right away, so the others don't wait
 function leaveOnline() {
   const n = net;
-  if (n && st && !st.over && mode === 'online' && localSeats.has(n.seat) && st.players[n.seat].alive) {
-    const send = base => roomApi('POST', { op: 'push', id: n.id, clientId: n.clientId, base, entries: [{ seat: n.seat, sys: 'botify', cmds: [], h: '' }] }).catch(e => { if (e.status === 409 && e.data && e.data.len > base) return send(e.data.len); });
-    n.chain.then(() => send(n.base));
+  if (n) {
+    if (st && !st.over && localSeats.has(n.seat) && st.players[n.seat].alive) {
+      const send = base => ON.pushMoves(n.id, base, [{ seat: n.seat, sys: 'botify', cmds: [], h: '' }]).then(r => { if (r.conflict && r.len > base) return send(r.len); }).catch(() => {});
+      n.chain.then(() => send(n.base));
+    }
+    if (n.unwatch) n.unwatch();
   }
-  net = null; closeLobby(); try { history.replaceState(null, '', location.pathname); } catch (e) { /* sandboxed */ } }
+  net = null;
+  closeLobby();
+  if (onlineOK) { ON.setStatus('menu'); refreshOnlineHome(); }
+  clearRoomUrl();
+}
+// game over: the server replays the game and writes everyone's record; solo games too, when signed in
+async function recordResult() {
+  const box = $('#goRecord');
+  box.hidden = true; box.innerHTML = ''; lastRecord = null;
+  if (!onlineOK || human < 0 && mode !== 'online') return;
+  let job = null;
+  if (mode === 'online' && net) job = () => ON.finishOnline(net.id);
+  else if (mode === 'solo' && soloRec) {
+    if (!ON.profile) { box.hidden = false; box.append(h('span', null, h('b', null, 'Keep a record of your games'), h('small', null, 'Sign in from the title screen (Online) before your next game.'))); return; }
+    const rec = soloRec;
+    job = () => ON.recordSolo(rec.init, rec.log);
+  }
+  if (!job) return;
+  box.hidden = false; box.textContent = 'Recording the result…';
+  try { showRecord(await job()); }
+  catch (e) { box.textContent = 'The result could not be recorded: ' + e.message; }
+}
+function showRecord(r) {
+  lastRecord = r;
+  const box = $('#goRecord'), rows = r.results || [];
+  const mine = rows.find(x => x.user_id === (ON.user && ON.user.id)) || (mode === 'solo' ? rows[0] : null);
+  box.innerHTML = '';
+  if (!mine) { box.hidden = true; return; }
+  box.append(avatarOf(mine.tribe, 34), h('span', null, h('b', null, (mine.won ? 'Win' : mine.left_game ? 'Left early' : 'Place ' + mine.place) + ' recorded to your profile'), h('small', null, (TT.tribe(mine.tribe) || {}).name + ' · score ' + mine.score)),
+    h('button', { class: 'btn', type: 'button', id: 'goProfile', onclick: () => openProfile(null) }, 'Profile'));
+  box.hidden = false;
+  ON.reloadProfile().then(() => refreshOnlineHome()).catch(() => {});
+}
 
 // ---------------------------------------------------------------- codex
 function renderCodex() {

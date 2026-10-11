@@ -324,11 +324,32 @@ function horse(g, coat, mane, cloth, tribe, armored) {
 const UNIT_BOX = { x0: -60, y0: -112, x1: 62, y1: 16 };
 ART.UNIT_BOX = UNIT_BOX;
 
+// the giant towers over everyone (a normal unit is scale 1)
+const GIANT_SCALE = 1.6;
+function giantBody(g, C, L, tribe) {
+    limb(g, -9, -38, -14, -22, 7, dk(L.skin, 0.12)); hand(g, -14, -21, L, 3.8);
+    legs(g, { pants: dk(L.skin, 0.1) }, 1);
+    // bare torso + fur
+    g.beginPath(); g.moveTo(-12, -40); g.quadraticCurveTo(0, -45, 12, -40); g.lineTo(13, -16); g.quadraticCurveTo(0, -12, -13, -16); g.closePath();
+    fs(g, lg(g, -12, -44, 12, -16, [[0, lt(L.skin, 0.15)], [1, dk(L.skin, 0.18)]]));
+    line(g, -4, -36, -3, -26, dk(L.skin, 0.25), 0.8); line(g, 4, -36, 3, -26, dk(L.skin, 0.25), 0.8);
+    // war paint in tribe color
+    line(g, -9, -33, -3, -31, C, 1.6); line(g, 9, -33, 3, -31, C, 1.6);
+    g.beginPath(); g.moveTo(-14, -21); g.lineTo(14, -21); g.lineTo(15, -12); for (let k = 15; k >= -15; k -= 3) g.lineTo(k, k % 2 ? -9 : -11.5); g.closePath();
+    fs(g, lg(g, 0, -21, 0, -9, [[0, 0x9a6a3a], [1, 0x5e3a1d]]), 1.2);
+    rr(g, -13, -23, 26, 3.5, 1.4); fs(g, css(C), 1);
+    head(g, 1, -53, 11.5, L, tribe);
+    // beard
+    g.beginPath(); g.moveTo(-3, -50); g.quadraticCurveTo(5, -36, 13, -48); g.quadraticCurveTo(8, -45, 4, -47); g.closePath(); fs(g, css(dk(L.hair === 0xe9e2d6 ? 0xd6cdbf : 0x5a3a22, 0)), 1);
+    // club over shoulder
+    club(g, 11, -34, -0.45, 30);
+    limb(g, 9, -38, 12, -33, 7, L.skin); hand(g, 12, -33, L, 3.8);
+}
 function drawUnit(g, o) {
   // o: { type, naval, color, tribe, ghost }
   const C = o.color, L = ART.look(o.tribe), tribe = o.tribe;
   const trim = L.trim;
-  if (o.naval) return drawBoat(g, o.naval, C, L, tribe);
+  if (o.naval) return drawBoat(g, o.naval, C, L, tribe, o.type);
   switch (o.type) {
     case 'warrior': {
       shadow(g, 0, 0, 15, 4.5);
@@ -548,25 +569,9 @@ function drawUnit(g, o) {
       break;
     }
     case 'giant': {
-      shadow(g, 0, 0, 24, 6);
-      g.save(); g.scale(1.26, 1.26);
-      limb(g, -9, -38, -14, -22, 7, dk(L.skin, 0.12)); hand(g, -14, -21, L, 3.8);
-      legs(g, { pants: dk(L.skin, 0.1) }, 1);
-      // bare torso + fur
-      g.beginPath(); g.moveTo(-12, -40); g.quadraticCurveTo(0, -45, 12, -40); g.lineTo(13, -16); g.quadraticCurveTo(0, -12, -13, -16); g.closePath();
-      fs(g, lg(g, -12, -44, 12, -16, [[0, lt(L.skin, 0.15)], [1, dk(L.skin, 0.18)]]));
-      line(g, -4, -36, -3, -26, dk(L.skin, 0.25), 0.8); line(g, 4, -36, 3, -26, dk(L.skin, 0.25), 0.8);
-      // war paint in tribe color
-      line(g, -9, -33, -3, -31, C, 1.6); line(g, 9, -33, 3, -31, C, 1.6);
-      g.beginPath(); g.moveTo(-14, -21); g.lineTo(14, -21); g.lineTo(15, -12); for (let k = 15; k >= -15; k -= 3) g.lineTo(k, k % 2 ? -9 : -11.5); g.closePath();
-      fs(g, lg(g, 0, -21, 0, -9, [[0, 0x9a6a3a], [1, 0x5e3a1d]]), 1.2);
-      rr(g, -13, -23, 26, 3.5, 1.4); fs(g, css(C), 1);
-      head(g, 1, -53, 11.5, L, tribe);
-      // beard
-      g.beginPath(); g.moveTo(-3, -50); g.quadraticCurveTo(5, -36, 13, -48); g.quadraticCurveTo(8, -45, 4, -47); g.closePath(); fs(g, css(dk(L.hair === 0xe9e2d6 ? 0xd6cdbf : 0x5a3a22, 0)), 1);
-      // club over shoulder
-      club(g, 11, -34, -0.45, 30);
-      limb(g, 9, -38, 12, -33, 7, L.skin); hand(g, 12, -33, L, 3.8);
+      shadow(g, 0, 0, 30, 7.5);
+      g.save(); g.scale(GIANT_SCALE, GIANT_SCALE);
+      giantBody(g, C, L, tribe);
       g.restore();
       break;
     }
@@ -574,11 +579,12 @@ function drawUnit(g, o) {
   }
 }
 
-function drawBoat(g, kind, C, L, tribe) {
+function drawBoat(g, kind, C, L, tribe, rider) {
+  const big = rider === 'giant';
   // water ripple base
-  ell(g, 0, 0, 34, 6); fill(g, 'rgba(255,255,255,.22)');
+  ell(g, 0, 0, big ? 42 : 34, 6); fill(g, 'rgba(255,255,255,.22)');
   const hull = kind === 'battleship' ? 0x4a4858 : kind === 'ship' ? 0x8a5530 : 0xa66c3a;
-  const len = kind === 'boat' ? 30 : 37;
+  const len = (kind === 'boat' ? 30 : 37) + (big ? 7 : 0);
   // mast(s) and sails behind/above
   const mast = (x, h) => { line(g, x, -12, x, -12 - h, INK, 3.6); line(g, x, -12, x, -12 - h, WOOD_D, 2); };
   if (kind === 'boat') {
@@ -600,6 +606,14 @@ function drawBoat(g, kind, C, L, tribe) {
     // flag
     poly(g, [-10, -66, 2, -63, -10, -60]); fs(g, css(C), 1);
   }
+  if (big) {
+    // the giant sits in the hull: only the upper body shows above the gunwale, his legs are hidden by the planks
+    const gx = kind === 'boat' ? -15 : 1;
+    g.save(); g.beginPath(); g.rect(-120, -220, 240, 214); g.clip();
+    g.translate(gx, 10); g.scale(GIANT_SCALE * 0.82, GIANT_SCALE * 0.82);
+    giantBody(g, C, L, tribe);
+    g.restore();
+  }
   // hull
   g.beginPath(); g.moveTo(-len, -14); g.lineTo(len - 6, -14); g.quadraticCurveTo(len + 6, -14, len + 9, -20);
   g.quadraticCurveTo(len + 4, -2, len - 8, 0); g.lineTo(-len + 6, 0); g.quadraticCurveTo(-len - 2, -4, -len, -14); g.closePath();
@@ -616,8 +630,8 @@ function drawBoat(g, kind, C, L, tribe) {
   g.restore();
   g.beginPath(); g.moveTo(-len, -14); g.lineTo(len - 6, -14); g.quadraticCurveTo(len + 6, -14, len + 9, -20);
   g.quadraticCurveTo(len + 4, -2, len - 8, 0); g.lineTo(-len + 6, 0); g.quadraticCurveTo(-len - 2, -4, -len, -14); g.closePath(); stroke(g, INKS, 1.5);
-  // passenger
-  head(g, kind === 'boat' ? -12 : -24, -20, 6.2, L, tribe);
+  // passenger (a giant is already aboard, filling the deck)
+  if (!big) head(g, kind === 'boat' ? -12 : -24, -20, 6.2, L, tribe);
   // foam
   for (const [x, r] of [[len + 7, 3], [len + 2, 2.2], [-len + 1, 2.4]]) { circ(g, x, -1, r); fill(g, 'rgba(255,255,255,.8)'); }
 }
@@ -1037,7 +1051,7 @@ ART.thumb = function (cv, spec, cssSize) {
     g.translate(S / 2 - (box.x0 + w / 2) * k, S / 2 - (box.y0 + hh / 2) * k); g.scale(k, k);
   };
   if (spec.kind === 'unit') {
-    const box = spec.naval ? { x0: -44, y0: -72, x1: 48, y1: 6 } : spec.type === 'balloon' ? { x0: -36, y0: -112, x1: 36, y1: 4 } : spec.type === 'giant' ? { x0: -40, y0: -108, x1: 40, y1: 6 } : (spec.type === 'rider' || spec.type === 'knight') ? { x0: -38, y0: -88, x1: 50, y1: 6 } : spec.type === 'catapult' ? { x0: -34, y0: -66, x1: 44, y1: 6 } : { x0: -26, y0: -82, x1: 30, y1: 6 };
+    const box = spec.naval ? (spec.type === 'giant' ? { x0: -54, y0: -96, x1: 56, y1: 6 } : { x0: -44, y0: -72, x1: 48, y1: 6 }) : spec.type === 'balloon' ? { x0: -36, y0: -112, x1: 36, y1: 4 } : spec.type === 'giant' ? { x0: -48, y0: -124, x1: 48, y1: 6 } : (spec.type === 'rider' || spec.type === 'knight') ? { x0: -38, y0: -88, x1: 50, y1: 6 } : spec.type === 'catapult' ? { x0: -34, y0: -66, x1: 44, y1: 6 } : { x0: -26, y0: -82, x1: 30, y1: 6 };
     fit(box, spec.pad);
     drawUnit(g, spec);
   } else if (spec.kind === 'city') { fit({ x0: -56, y0: -66, x1: 56, y1: 46 }); ART.city(g, spec.city, spec.tribe, spec.color); }
