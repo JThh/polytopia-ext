@@ -2578,9 +2578,10 @@ TT.exec = function (st, cmd) {
   return TT[cmd[0]].apply(null, [st].concat(cmd.slice(1)));
 };
 // compact fingerprint of everything that matters for play; equal hashes = same game
+// Who controls a seat (person or bot) is left out on purpose: seat hand-offs commute with moves in online games.
 TT.hash = function (st) {
-  const parts = [st.turn, st.current, st.rng, st.over ? st.over.winner : -1];
-  for (const P of st.players) parts.push(P.stars, P.power, P.alive ? 1 : 0, P.embassy ? 1 : 0, P.isAI ? 1 : 0, Object.keys(P.techs).sort().join('.'));
+  const parts = [st.turn, st.current, st.rng, st.over ? st.over.winner + st.over.reason : -1];
+  for (const P of st.players) parts.push(P.stars, P.power, P.alive ? 1 : 0, P.embassy ? 1 : 0, Object.keys(P.techs).sort().join('.'));
   for (const u of st.units) parts.push(u.id, u.type, u.owner, u.x, u.y, u.hp, u.naval || '', u.canMove ? 1 : 0, u.canAttack ? 1 : 0, u.vet ? 1 : 0, u.frozen || 0);
   for (const c of st.cities) parts.push(c.owner, c.level, c.pop, c.walls ? 1 : 0, c.workshop, c.parks, c.radius, c.pending.join(','));
   for (const t of st.tiles) parts.push(t.t, t.owner, t.res || '', t.imp || '', t.road ? 1 : 0, t.ruin ? 1 : 0);
@@ -4863,17 +4864,26 @@ function drawField(x, y, h, z, tl, time) {
     g.restore();
     poly4(a, b, c, d); g.lineWidth = Math.max(1.5, z * 0.014); g.strokeStyle = 'rgba(90,60,30,0.6)'; g.stroke();
   } else {
-    const [cx, cy] = P(x + 0.5, y + 0.5, h), rx = z * 0.3, ry = rx * KR;
-    g.beginPath(); g.ellipse(cx, cy, rx, ry, 0, 0, Math.PI * 2);
-    const grd = g.createRadialGradient(cx - rx * 0.3, cy - ry * 0.3, 0, cx, cy, rx); grd.addColorStop(0, 'rgba(246,220,128,0.95)'); grd.addColorStop(1, 'rgba(204,156,54,0.9)');
+    // wild grain: a square patch on the tile (rounded corners), lighter than a tilled farm
+    const [cx, cy] = P(x + 0.5, y + 0.5, h), rx = z * 0.3, ry = rx * KR, i2 = 0.2, rr = 0.07;
+    const pts = [[x + i2, y + i2], [x + 1 - i2, y + i2], [x + 1 - i2, y + 1 - i2], [x + i2, y + 1 - i2]];
+    g.beginPath();
+    pts.forEach((q, k) => {
+      const nx = pts[(k + 1) % 4], pv = pts[(k + 3) % 4];
+      const toward = (o, f) => P(q[0] + Math.sign(o[0] - q[0]) * f, q[1] + Math.sign(o[1] - q[1]) * f, h);
+      const s0 = toward(pv, rr), e0 = toward(nx, rr), c0 = P(q[0], q[1], h);
+      if (k === 0) g.moveTo(s0[0], s0[1]); else g.lineTo(s0[0], s0[1]);
+      g.quadraticCurveTo(c0[0], c0[1], e0[0], e0[1]);
+    });
+    g.closePath();
+    const grd = g.createRadialGradient(cx - rx * 0.3, cy - ry * 0.3, 0, cx, cy, rx * 1.2); grd.addColorStop(0, 'rgba(246,220,128,0.95)'); grd.addColorStop(1, 'rgba(204,156,54,0.9)');
     g.fillStyle = grd; g.fill();
-    // short wheat tufts in loose rows, swaying a little
+    g.lineWidth = Math.max(1, z * 0.01); g.strokeStyle = 'rgba(150,108,30,0.45)'; g.stroke();
+    // short wheat tufts in a loose grid, swaying a little
     const sway = reduceMotion ? 0 : Math.sin(time * 1.6 + x + y) * z * 0.004;
     g.lineCap = 'round';
-    for (let r2 = -2; r2 <= 2; r2++) for (let k = -3; k <= 3; k++) {
-      const u = k * 0.085 + (r2 % 2 ? 0.04 : 0), v = r2 * 0.085;
-      if ((u * u) / 0.07 + (v * v) / 0.05 > 1) continue;
-      const [px, py] = P(x + 0.5 + u + v * 0.5, y + 0.5 + v - u * 0.5, h);
+    for (let r2 = -2; r2 <= 2; r2++) for (let k = -2; k <= 2; k++) {
+      const [px, py] = P(x + 0.5 + k * 0.115 + (r2 % 2 ? 0.03 : 0), y + 0.5 + r2 * 0.115, h);
       const ht = z * 0.035;
       g.beginPath(); g.moveTo(px, py); g.lineTo(px + sway, py - ht); g.lineWidth = Math.max(1, z * 0.008); g.strokeStyle = '#a8822a'; g.stroke();
       g.beginPath(); g.ellipse(px + sway, py - ht, Math.max(1, z * 0.008), Math.max(1.5, z * 0.016), 0, 0, Math.PI * 2); g.fillStyle = '#ffe28a'; g.fill();
@@ -6200,7 +6210,8 @@ function startWith(s, opts) {
   mode = opts.mode || (!people.length ? 'spectate' : people.length > 1 ? 'hotseat' : 'solo');
   localSeats = opts.localSeats || new Set(people);
   net = opts.net || null;
-  TT.setRecorder(st, net ? (cmd => { if (net && !net.applying) net.outbox.push(cmd); }) : null);
+  const n0 = net;   // bound to this connection, so a stale bot turn can never leak moves into a rebuilt game
+  TT.setRecorder(st, n0 ? (cmd => { if (net === n0 && !n0.applying) n0.outbox.push(cmd); }) : null);
   human = localSeats.size ? (localSeats.has(st.current) ? st.current : localSeats.values().next().value) : -1;
   $('#menu').hidden = true; $('#gameover').hidden = true; $('#pause').hidden = true; $('#lobby').hidden = true; $('#curtain').hidden = true;
   inGameChrome(true);
@@ -6241,7 +6252,7 @@ async function drive() {
     if (paused) { await sleep(200); continue; }
     const kind = seatKind(st.current);
     if (kind === 'local') break;
-    if (kind === 'bot' && iRunBots()) { await runBotTurn(my); continue; }
+    if (kind === 'bot' && (iRunBots() || (net && net.forceBots))) { await runBotTurn(my); continue; }
     showAIStrip(kind);
     await netWait(my);
   }
@@ -7496,7 +7507,7 @@ function bindUI() {
 }
 
 // debug / automation hook
-G.__tessera = { get state() { return st; }, get human() { return human; }, get busy() { return busy; }, get canAct() { return !!st && canAct(); }, get mode() { return mode; }, get netBase() { return net ? net.base : -1; }, get pending() { return net ? net.outbox.length : 0; }, netStats, joinRoom, createRoom, click: onTileClick, endTurn, showTech, selectNextUnit, newGame, prefs, act, setup: () => setup, select: s => { sel = s; refresh(); } };
+G.__tessera = { get state() { return st; }, get R3() { return R3; }, get human() { return human; }, get busy() { return busy; }, get canAct() { return !!st && canAct(); }, get mode() { return mode; }, get netBase() { return net ? net.base : -1; }, get pending() { return net ? net.outbox.length : 0; }, netStats, joinRoom, createRoom, click: onTileClick, endTurn, showTech, selectNextUnit, newGame, prefs, act, setup: () => setup, select: s => { sel = s; refresh(); } };
 
 // ---------------------------------------------------------------- online play (needs the Vercel backend with storage)
 // Every client replays the same command log from the same seed, so the server only stores and orders moves.
@@ -7508,7 +7519,7 @@ async function roomApi(method, body, query) {
   if (!r.ok) { const e = new Error(j.error || 'Network error ' + r.status); e.status = r.status; e.data = j; throw e; }
   return j;
 }
-function makeNet(info) { return { id: info.id, clientId: info.clientId, seat: info.seat, cid8: info.clientId.slice(0, 8), base: 0, outbox: [], applying: false, chain: Promise.resolve(), room: null, final: null, lastProgress: performance.now() }; }
+function makeNet(info) { return { id: info.id, clientId: info.clientId, seat: info.seat, cid8: info.clientId.slice(0, 8), base: 0, outbox: [], applying: false, chain: Promise.resolve(), sysq: [], forceBots: false, room: null, final: null, lastProgress: performance.now() }; }
 function playerName() { const v = ($('#onName') && $('#onName').value.trim()) || store.get('name', ''); if (v) store.set('name', v.slice(0, 20)); return v.slice(0, 20); }
 function rememberRoom(r) { store.set('room:' + r.id, { clientId: r.clientId, seat: r.seat }); }
 
@@ -7589,86 +7600,100 @@ function applyEntryInstant(s, e) {
   for (const c of e.cmds) if (!TT.exec(s, c)) throw new Error('log replay failed');
 }
 async function applyEntryLive(e) {
+  const s0 = st, n = net;
   if (e.sys) {
-    const P = st.players[e.seat], bot = e.sys === 'botify', who = (bot ? seatLabel(e.seat) : net && net.room && net.room.seats[e.seat] && net.room.seats[e.seat].name) || P.name;
+    const P = s0.players[e.seat], bot = e.sys === 'botify', who = (bot ? seatLabel(e.seat) : n && n.room && n.room.seats[e.seat] && n.room.seats[e.seat].name) || P.name;
     if (P.isAI === bot) return;
     P.isAI = bot;
-    if (net && e.seat === net.seat) { if (bot) { localSeats.delete(e.seat); toast('A bot took over your tribe while you were away. Tap “Take back my tribe” to return.'); } else localSeats.add(e.seat); }
-    else toast(who + (bot ? ' left. A bot plays their tribe now.' : ' is back.'));
+    if (n && e.seat === n.seat) {
+      if (bot) { localSeats.delete(e.seat); toast('A bot took over your tribe while you were away. Tap “Take back my tribe” to return.'); }
+      else { localSeats.add(e.seat); human = e.seat; R3.setViewer(e.seat); miniSig = ''; document.body.classList.remove('spectating'); toast('Welcome back. Your tribe is yours again.'); }
+    } else toast(who + (bot ? ' left. A bot plays their tribe now.' : ' is back.'));
     renderRail();
     return;
   }
-  net.applying = true;
+  n.applying = true;
   try {
     for (const c of e.cmds) {
-      const evs = TT.exec(st, c);
+      if (st !== s0) return;   // a resync replaced the game mid-entry; the rebuilt state already has this move
+      const evs = TT.exec(s0, c);
       if (!evs) throw new Error('a move from another player could not be applied');
       await R3.play(evs);
+      if (st !== s0) return;
       noteLosses(evs);
       refreshLight();
     }
-  } finally { net.applying = false; }
+  } finally { n.applying = false; }
   netStats.applied++;
-  if (e.h && TT.hash(st) !== e.h) throw new Error('game state drifted');
+  if (e.h && TT.hash(s0) !== e.h) throw new Error('game state drifted');
 }
-// wait for other players' moves; offers a take-over when someone stalls
+// Wait for other players' moves. This loop is the only place that applies remote entries or sends seat changes
+// (take back my tribe, hand a stalled seat to a bot), so those never race the replay.
 async function netWait(my) {
   if (!net) { await sleep(300); return; }
-  const take = $('#aiTake');
+  const n = net, take = $('#aiTake');
+  const live = () => my === token && net === n;
   for (;;) {
-    if (my !== token) return;
+    if (!live()) return;
+    if (n.forceBots && st.players[st.current].isAI) return;   // drive() runs this bot turn
     let got = 0;
     try {
-      const j = await roomApi('GET', null, { id: net.id, from: net.base, clientId: net.clientId });
-      net.room = j.room;
-      for (let i = 0; i < j.log.length; i++) {
-        if (my !== token) return;
-        const e = j.log[i];
-        if (j.from + i < net.base) continue;
-        if (e.cid !== net.cid8) await applyEntryLive(e);
-        net.base = j.from + i + 1; got++;
+      const j = await roomApi('GET', null, { id: n.id, from: n.base, log: 1 });
+      if (!live()) return;
+      const fresh = j.log.filter((e, i) => j.from + i >= n.base);
+      // a requested seat change goes in right after what we just fetched (one round trip of race window, so it
+      // can't starve while others keep moving); a stalled player who moved meanwhile keeps their seat
+      let mine = null;
+      while (n.sysq.length && !mine) {
+        const q = n.sysq[0], P = st.players[q.seat];
+        if (P.isAI === (q.sys === 'botify') || !P.alive || (q.sys === 'botify' && fresh.some(e => !e.sys && e.seat === q.seat))) { n.sysq.shift(); continue; }
+        try {
+          const r = await roomApi('POST', { op: 'push', id: n.id, clientId: n.clientId, base: j.len, entries: [{ seat: q.seat, sys: q.sys, cmds: [], h: '' }] });
+          if (!live()) return;
+          n.sysq.shift(); mine = { e: q, len: r.len };
+        } catch (er) { if (!live()) return; if (er.status !== 409) { n.sysq.shift(); toast(er.message); } break; }   // 409: retry after the next fetch
       }
+      for (let i = 0; i < j.log.length; i++) {
+        const e = j.log[i];
+        if (j.from + i < n.base) continue;
+        if (e.cid !== n.cid8) {
+          // more than a couple of entries behind (bots ran fast, or the tab was asleep): skip animations to catch up
+          const ff = j.log.length - i - 1 > 1;
+          if (ff !== !!n.ff) { n.ff = ff; R3.setOptions({ instant: ff }); }
+          await applyEntryLive(e);
+          if (!live()) return;
+          if (!e.sys) n.forceBots = false;
+        }
+        n.base = j.from + i + 1; got++;
+      }
+      if (mine) { await applyEntryLive(mine.e); if (!live()) return; n.base = mine.len; got++; }
     } catch (e) {
+      if (!live()) return;
+      if (n.ff) { n.ff = false; R3.setOptions({ instant: false }); }
       if (/drifted|could not be applied/.test(e.message)) { await netResync('Out of sync (' + e.message + ').'); return; }
       // network hiccup: keep waiting
     }
-    if (got) { net.lastProgress = performance.now(); take.hidden = true; renderRail(); return; }
-    const idle = performance.now() - net.lastProgress, P = st.players[st.current], M = st.players[net.seat];
-    if (M.isAI && M.alive) { take.hidden = false; take.textContent = 'Take back my tribe'; take.onclick = () => { take.hidden = true; reclaimSeat(); }; }
-    else if (P.isAI && idle > 25000) { take.hidden = false; take.textContent = 'Run the bots'; take.onclick = () => { take.hidden = true; net.lastProgress = performance.now(); takeOverBots(my); }; }
-    else if (!P.isAI && idle > (net.seat === 0 ? 60000 : 90000)) { take.hidden = false; take.textContent = 'Give this turn to a bot'; take.onclick = () => { take.hidden = true; botifySeat(st.current); }; }
-    await sleep(1100);
+    if (n.ff) { n.ff = false; R3.setOptions({ instant: false }); }
+    if (got) { n.lastProgress = performance.now(); take.hidden = true; renderRail(); return; }
+    const idle = performance.now() - n.lastProgress, P = st.players[st.current], M = st.players[n.seat];
+    if (n.sysq.length || n.forceBots) take.hidden = true;
+    else if (M.isAI && M.alive) { take.hidden = false; take.textContent = 'Take back my tribe'; take.onclick = () => { take.hidden = true; n.sysq.push({ seat: n.seat, sys: 'human' }); }; }
+    else if (P.isAI && idle > 25000) { take.hidden = false; take.textContent = 'Run the bots'; take.onclick = () => { take.hidden = true; n.forceBots = true; }; }
+    else if (!P.isAI && idle > (n.seat === 0 ? 60000 : 90000)) { const seat = st.current; take.hidden = false; take.textContent = 'Give this turn to a bot'; take.onclick = () => { take.hidden = true; n.sysq.push({ seat, sys: 'botify' }); }; }
+    for (let t = 0; t < 11 && live() && !n.sysq.length && !n.forceBots; t++) await sleep(100);
   }
 }
-async function reclaimSeat() {
-  try {
-    await pushSys({ seat: net.seat, sys: 'human' });
-    localSeats.add(net.seat); human = net.seat; R3.setViewer(net.seat); document.body.classList.remove('spectating');
-    toast('Welcome back. Your tribe is yours again.');
-    token++; drive();
-  } catch (e) { if (e.status === 409) netResync('Another move arrived first.'); else toast(e.message); }
-}
-// push a seat change; these commute with moves, so a stale base only needs the missing entries applied first
-async function pushSys(entry) {
-  for (let i = 0; i < 4; i++) {
-    try { const r = await roomApi('POST', { op: 'push', id: net.id, clientId: net.clientId, base: net.base, entries: [Object.assign({ cmds: [], h: '' }, entry)] }); net.base = r.len; net.lastProgress = performance.now(); return applyEntryInstant(st, entry); }
-    catch (e) { if (e.status !== 409 || !(await catchUp())) throw e; }
-  }
-  throw Object.assign(new Error('Room is busy.'), { status: 409 });
-}
-// fetch entries we have not seen; returns false if any of them is a move (a real conflict that needs a resync)
-async function catchUp(seat) {
-  const j = await roomApi('GET', null, { id: net.id, from: net.base, clientId: net.clientId });
-  const fresh = j.log.filter((e, i) => j.from + i >= net.base);
-  if (fresh.some(e => (!e.sys && e.cid !== net.cid8) || (e.sys && e.seat === seat))) return false;
+// fetch entries we have not seen while pushing our own moves; false if any is a move or touches our seat (a real conflict)
+async function catchUp(n, seat) {
+  const j = await roomApi('GET', null, { id: n.id, from: n.base, log: 1 });
+  if (net !== n) return false;
+  const fresh = j.log.filter((e, i) => j.from + i >= n.base);
+  if (fresh.some(e => (!e.sys && e.cid !== n.cid8) || (e.sys && e.seat === seat))) return false;
   for (const e of fresh) if (e.sys) await applyEntryLive(e);
-  net.base = j.len;
+  n.base = j.len;
+  // someone took their seat back and now runs this bot turn: let them
+  if (st.players[seat].isAI && !n.forceBots && !localSeats.has(botRunner(seat))) return false;
   return true;
-}
-async function takeOverBots(my) { token++; const m = token; await runBotTurn(m); if (m === token) drive(); }
-async function botifySeat(seat) {
-  try { await pushSys({ seat, sys: 'botify' }); token++; drive(); }
-  catch (e) { if (e.status === 409) netResync('Another move arrived first.'); else toast(e.message); }
 }
 // send our recorded moves; on a conflict, rebuild from the shared log
 function netFlush(seat) {
@@ -7677,9 +7702,10 @@ function netFlush(seat) {
   const n = net;
   n.chain = n.chain.then(async () => {
     for (let attempt = 0; attempt < 4; attempt++) {
+      if (net !== n) return;
       try { const r = await roomApi('POST', { op: 'push', id: n.id, clientId: n.clientId, base: n.base, entries: [entry] }); n.base = r.len; n.lastProgress = performance.now(); netStats.pushed++; return; }
       catch (e) {
-        if (e.status === 409) { netStats.conflicts++; if (net === n && await catchUp(seat).catch(() => false)) { entry.h = ''; continue; } await netResync('Another move arrived first.'); return; }
+        if (e.status === 409) { netStats.conflicts++; if (net === n && await catchUp(n, seat).catch(() => false)) continue; await netResync('Another move arrived first.'); return; }
         await sleep(800 * (attempt + 1));
       }
     }
@@ -7700,7 +7726,7 @@ async function netResync(reason) {
     const n2 = makeNet(n); n2.final = n.final; n2.room = j.room; n2.base = j.len;
     const seats = new Set(!s0.players[n.seat].isAI ? [n.seat] : []);
     startWith(s0, { mode: 'online', localSeats: seats, net: n2 });
-  } catch (e) { toast('Resync failed: ' + e.message); }
+  } catch (e) { toast('Resync failed: ' + e.message); setTimeout(() => { if (net === n) netResync('Retrying.'); }, 4000); }
 }
 function leaveOnline() {
   const n = net;

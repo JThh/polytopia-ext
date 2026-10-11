@@ -6,7 +6,7 @@
   "scripts": {
     "build": "node build.js",
     "dev": "node build.js && node dev-server.js",
-    "test": "node test/inv.js"
+    "test": "node test/inv.js && node test/replay.js && node test/multi.js"
   },
   "engines": { "node": ">=18" }
 }

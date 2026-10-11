@@ -1510,9 +1510,10 @@ TT.exec = function (st, cmd) {
   return TT[cmd[0]].apply(null, [st].concat(cmd.slice(1)));
 };
 // compact fingerprint of everything that matters for play; equal hashes = same game
+// Who controls a seat (person or bot) is left out on purpose: seat hand-offs commute with moves in online games.
 TT.hash = function (st) {
-  const parts = [st.turn, st.current, st.rng, st.over ? st.over.winner : -1];
-  for (const P of st.players) parts.push(P.stars, P.power, P.alive ? 1 : 0, P.embassy ? 1 : 0, P.isAI ? 1 : 0, Object.keys(P.techs).sort().join('.'));
+  const parts = [st.turn, st.current, st.rng, st.over ? st.over.winner + st.over.reason : -1];
+  for (const P of st.players) parts.push(P.stars, P.power, P.alive ? 1 : 0, P.embassy ? 1 : 0, Object.keys(P.techs).sort().join('.'));
   for (const u of st.units) parts.push(u.id, u.type, u.owner, u.x, u.y, u.hp, u.naval || '', u.canMove ? 1 : 0, u.canAttack ? 1 : 0, u.vet ? 1 : 0, u.frozen || 0);
   for (const c of st.cities) parts.push(c.owner, c.level, c.pop, c.walls ? 1 : 0, c.workshop, c.parks, c.radius, c.pending.join(','));
   for (const t of st.tiles) parts.push(t.t, t.owner, t.res || '', t.imp || '', t.road ? 1 : 0, t.ruin ? 1 : 0);

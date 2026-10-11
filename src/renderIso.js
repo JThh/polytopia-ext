@@ -432,17 +432,26 @@ function drawField(x, y, h, z, tl, time) {
     g.restore();
     poly4(a, b, c, d); g.lineWidth = Math.max(1.5, z * 0.014); g.strokeStyle = 'rgba(90,60,30,0.6)'; g.stroke();
   } else {
-    const [cx, cy] = P(x + 0.5, y + 0.5, h), rx = z * 0.3, ry = rx * KR;
-    g.beginPath(); g.ellipse(cx, cy, rx, ry, 0, 0, Math.PI * 2);
-    const grd = g.createRadialGradient(cx - rx * 0.3, cy - ry * 0.3, 0, cx, cy, rx); grd.addColorStop(0, 'rgba(246,220,128,0.95)'); grd.addColorStop(1, 'rgba(204,156,54,0.9)');
+    // wild grain: a square patch on the tile (rounded corners), lighter than a tilled farm
+    const [cx, cy] = P(x + 0.5, y + 0.5, h), rx = z * 0.3, ry = rx * KR, i2 = 0.2, rr = 0.07;
+    const pts = [[x + i2, y + i2], [x + 1 - i2, y + i2], [x + 1 - i2, y + 1 - i2], [x + i2, y + 1 - i2]];
+    g.beginPath();
+    pts.forEach((q, k) => {
+      const nx = pts[(k + 1) % 4], pv = pts[(k + 3) % 4];
+      const toward = (o, f) => P(q[0] + Math.sign(o[0] - q[0]) * f, q[1] + Math.sign(o[1] - q[1]) * f, h);
+      const s0 = toward(pv, rr), e0 = toward(nx, rr), c0 = P(q[0], q[1], h);
+      if (k === 0) g.moveTo(s0[0], s0[1]); else g.lineTo(s0[0], s0[1]);
+      g.quadraticCurveTo(c0[0], c0[1], e0[0], e0[1]);
+    });
+    g.closePath();
+    const grd = g.createRadialGradient(cx - rx * 0.3, cy - ry * 0.3, 0, cx, cy, rx * 1.2); grd.addColorStop(0, 'rgba(246,220,128,0.95)'); grd.addColorStop(1, 'rgba(204,156,54,0.9)');
     g.fillStyle = grd; g.fill();
-    // short wheat tufts in loose rows, swaying a little
+    g.lineWidth = Math.max(1, z * 0.01); g.strokeStyle = 'rgba(150,108,30,0.45)'; g.stroke();
+    // short wheat tufts in a loose grid, swaying a little
     const sway = reduceMotion ? 0 : Math.sin(time * 1.6 + x + y) * z * 0.004;
     g.lineCap = 'round';
-    for (let r2 = -2; r2 <= 2; r2++) for (let k = -3; k <= 3; k++) {
-      const u = k * 0.085 + (r2 % 2 ? 0.04 : 0), v = r2 * 0.085;
-      if ((u * u) / 0.07 + (v * v) / 0.05 > 1) continue;
-      const [px, py] = P(x + 0.5 + u + v * 0.5, y + 0.5 + v - u * 0.5, h);
+    for (let r2 = -2; r2 <= 2; r2++) for (let k = -2; k <= 2; k++) {
+      const [px, py] = P(x + 0.5 + k * 0.115 + (r2 % 2 ? 0.03 : 0), y + 0.5 + r2 * 0.115, h);
       const ht = z * 0.035;
       g.beginPath(); g.moveTo(px, py); g.lineTo(px + sway, py - ht); g.lineWidth = Math.max(1, z * 0.008); g.strokeStyle = '#a8822a'; g.stroke();
       g.beginPath(); g.ellipse(px + sway, py - ht, Math.max(1, z * 0.008), Math.max(1.5, z * 0.016), 0, 0, Math.PI * 2); g.fillStyle = '#ffe28a'; g.fill();

@@ -2,6 +2,7 @@
 // client replays the same log with the same deterministic engine, so the server never runs game rules.
 //
 // GET  /api/room?id=CODE&from=N          -> { room, log: [entries from N], len }
+// GET  /api/room?id=CODE&from=N&log=1    -> { log, len }   (in-game polling: one storage command)
 // POST /api/room { op: 'create', name, settings }          -> { id, clientId, seat }
 // POST /api/room { op: 'join', id, name, clientId? }       -> { id, clientId, seat }   (clientId rejoins the same seat)
 // POST /api/room { op: 'tribe', id, clientId, tribe }      -> { ok }
@@ -65,6 +66,11 @@ module.exports = async (req, res) => {
   try {
     if (req.method === 'GET') {
       const id = String((req.query && req.query.id) || '').toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 8);
+      if (id && req.query.log === '1') {
+        const from = Math.max(0, Number(req.query.from) | 0);
+        const log = (await redis(['LRANGE', k.log(id), String(from), '-1'])).map(e => JSON.parse(e));
+        return res.status(200).json({ log, from, len: from + log.length });
+      }
       const room = id && await loadRoom(id);
       if (!room) return res.status(404).json({ error: 'No room with that code.' });
       const from = Math.max(0, Number(req.query.from) | 0);
