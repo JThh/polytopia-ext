@@ -1,0 +1,27 @@
+[project]
+name = "polyrl"
+version = "0.1.0"
+description = "Train a language model to play The Battle of Polytopia: state in, typed actions out (SFT + simulation-based RL)"
+requires-python = ">=3.10"
+dependencies = [
+  "torch>=2.4",
+  "transformers>=5.0",   # needs the qwen3_5 / gemma4 architectures; tested with 5.19
+  "peft>=0.17",
+  "pyyaml>=6",
+  "tokenizers>=0.20",
+  "safetensors>=0.4",
+]
+
+[project.optional-dependencies]
+# fast kernels for Qwen3.5's linear-attention layers (without them transformers falls back to slow PyTorch code)
+qwen35 = ["flash-linear-attention", "causal-conv1d"]
+vllm = ["vllm"]
+wandb = ["wandb"]
+dev = ["pytest>=8"]
+
+[tool.setuptools]
+packages = ["polyrl"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = ["slow: end-to-end training smoke test (CPU, about a minute)"]

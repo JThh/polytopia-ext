@@ -1,0 +1,29 @@
+# Stage 1 on one A100 40GB: Qwen3.5-4B + LoRA on the compact Polytopia SFT set.
+#   PYTHONPATH=ml python -m polyrl.sft --config ml/configs/sft.yaml
+model:
+  name: Qwen/Qwen3.5-4B
+  dtype: bfloat16
+  attn_implementation: sdpa        # flash_attention_2 if installed
+  gradient_checkpointing: true
+  max_length: 6144                 # prompt + action list; longer samples are dropped (the generator caps prompts too)
+lora:
+  r: 64
+  alpha: 128
+  dropout: 0.05
+data:
+  train_file: ml/data/sft/train.jsonl
+  val_file: ml/data/sft/val.jsonl
+  max_val_samples: 400
+  gen_eval_samples: 16             # greedy answers on validation states: parse rate, end_turn rate, overlap with the bot
+  chat_template: false             # plain "state -> action list" text; independent of the model family
+train:
+  lr: 2.0e-4
+  epochs: 1
+  max_tokens_per_batch: 16384      # padded tokens per micro-batch
+  grad_accum: 4                    # ~64k tokens (~40 samples) per optimizer step
+  warmup_ratio: 0.03
+  log_every: 10
+  eval_every: 250
+  save_every: 500
+output_dir: runs/sft-qwen3.5-4b
+merge_at_end: true                 # runs/.../merged = base + LoRA folded, the starting point for RL

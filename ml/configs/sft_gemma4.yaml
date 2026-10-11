@@ -1,0 +1,24 @@
+# Same recipe on Gemma 4 E4B. Check the exact repository id on huggingface.co/google before running
+# (instruction-tuned E4B shown); everything else is model-agnostic.
+#   PYTHONPATH=ml python -m polyrl.sft --config ml/configs/sft_gemma4.yaml
+model:
+  name: google/gemma-4-E4B-it
+  dtype: bfloat16
+  attn_implementation: sdpa
+  gradient_checkpointing: true
+  max_length: 6144
+lora:
+  r: 64
+  alpha: 128
+  dropout: 0.05
+data:
+  train_file: ml/data/sft/train.jsonl
+  val_file: ml/data/sft/val.jsonl
+train:
+  lr: 2.0e-4
+  epochs: 1
+  max_tokens_per_batch: 12288
+  grad_accum: 5
+  eval_every: 250
+  save_every: 500
+output_dir: runs/sft-gemma4-e4b

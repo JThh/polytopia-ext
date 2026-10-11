@@ -2,3 +2,9 @@ node_modules/
 .vercel/
 .env*
 .artifact/
+# ML: training runs and generated datasets (regenerate with ml/sim/gen_sft.js)
+runs/
+ml/data/sft/*.jsonl
+__pycache__/
+.pytest_cache/
+*.egg-info/

@@ -6,7 +6,8 @@
   "scripts": {
     "build": "node build.js",
     "dev": "node build.js && node dev-server.js",
-    "test": "node test/inv.js && node test/replay.js && node test/multi.js"
+    "test": "node test/inv.js && node test/replay.js && node test/multi.js",
+    "test:ml": "node ml/test/codec.js && node ml/test/rules.js && node ml/test/server.js && POLY_RULES=tessera node ml/test/codec.js 8"
   },
   "engines": { "node": ">=18" }
 }
