@@ -1,0 +1,187 @@
+{
+ "rules": "polytopia",
+ "format": "(actor, verb, *args)",
+ "actors": {
+  "unit": "<unit type>#<id>",
+  "city": "city#<id>",
+  "tribe": "tribe"
+ },
+ "verbs": {
+  "move": {
+   "actor": "unit",
+   "args": [
+    "pos"
+   ],
+   "engine": "move",
+   "desc": "Move the unit to an empty tile it can reach this turn."
+  },
+  "attack": {
+   "actor": "unit",
+   "args": [
+    "pos"
+   ],
+   "engine": "attack",
+   "desc": "Attack the enemy unit standing at pos (in range, visible)."
+  },
+  "convert": {
+   "actor": "unit",
+   "args": [
+    "pos"
+   ],
+   "engine": "attack",
+   "desc": "Mind Bender: take control of the enemy unit at pos."
+  },
+  "capture": {
+   "actor": "unit",
+   "args": [],
+   "engine": "capture",
+   "desc": "Capture or found the city or village the unit stands on."
+  },
+  "examine": {
+   "actor": "unit",
+   "args": [],
+   "engine": "examine",
+   "desc": "Examine the ruins the unit stands on (Polytopia rules)."
+  },
+  "recover": {
+   "actor": "unit",
+   "args": [],
+   "engine": "recover",
+   "desc": "Skip the unit's turn to heal (4 HP at home, 2 HP away)."
+  },
+  "heal": {
+   "actor": "unit",
+   "args": [],
+   "engine": "healOthers",
+   "desc": "Heal every adjacent injured ally by up to 4 HP."
+  },
+  "disband": {
+   "actor": "unit",
+   "args": [],
+   "engine": "disband",
+   "desc": "Remove the unit and refund half its cost."
+  },
+  "upgrade": {
+   "actor": "unit",
+   "args": [
+    "naval"
+   ],
+   "engine": "upgrade",
+   "desc": "Upgrade an embarked unit's vessel to a ship or battleship."
+  },
+  "train": {
+   "actor": "city",
+   "args": [
+    "unit"
+   ],
+   "engine": "train",
+   "desc": "Train a unit in the city."
+  },
+  "reward": {
+   "actor": "city",
+   "args": [
+    "reward"
+   ],
+   "engine": "chooseReward",
+   "desc": "Pick the city's pending level-up reward."
+  },
+  "build": {
+   "actor": "tribe",
+   "args": [
+    "build",
+    "pos"
+   ],
+   "engine": "build",
+   "desc": "Build or harvest on a tile inside my borders."
+  },
+  "research": {
+   "actor": "tribe",
+   "args": [
+    "tech"
+   ],
+   "engine": "research",
+   "desc": "Research a technology."
+  },
+  "end_turn": {
+   "actor": "tribe",
+   "args": [],
+   "engine": "endTurn",
+   "desc": "End the turn. Always the last tuple."
+  }
+ },
+ "vocab": {
+  "unit": [
+   "warrior",
+   "rider",
+   "archer",
+   "defender",
+   "swordsman",
+   "mindbender",
+   "knight",
+   "catapult"
+  ],
+  "naval": [
+   "ship",
+   "battleship"
+  ],
+  "reward": [
+   "workshop",
+   "explorer",
+   "walls",
+   "resources",
+   "growth",
+   "borders",
+   "park",
+   "giant"
+  ],
+  "build": [
+   "fruit",
+   "hunt",
+   "fish",
+   "whale",
+   "farm",
+   "mine",
+   "lumber",
+   "port",
+   "windmill",
+   "forge",
+   "sawmill",
+   "customs",
+   "temple",
+   "forest_temple",
+   "mountain_temple",
+   "water_temple",
+   "road",
+   "clear",
+   "grow",
+   "burn",
+   "destroy"
+  ],
+  "tech": [
+   "climbing",
+   "fishing",
+   "hunting",
+   "organization",
+   "riding",
+   "archery",
+   "farming",
+   "forestry",
+   "free_spirit",
+   "meditation",
+   "mining",
+   "roads",
+   "sailing",
+   "shields",
+   "whaling",
+   "aquatism",
+   "chivalry",
+   "construction",
+   "mathematics",
+   "navigation",
+   "smithery",
+   "spiritualism",
+   "trade",
+   "philosophy"
+  ]
+ }
+}

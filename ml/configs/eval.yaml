@@ -1,0 +1,16 @@
+# Model vs the built-in bots, paired with the hard bot playing the same seats in the same games.
+#   PYTHONPATH=ml python -m polyrl.evaluate --config ml/configs/eval.yaml
+model:
+  name: runs/rl-qwen3.5-4b/merged
+  gradient_checkpointing: false
+gen:
+  max_new_tokens: 768
+rules: polytopia
+targets: ml/data/sft/targets.json
+games: 48
+seed: 10000
+greedy: true
+baseline: hard
+sample: {sizes: {small: 1, normal: 2, large: 1}, players: [2, 5], difficulties: {hard: 2, crazy: 1}, modes: {score: 1}, turnLimits: [30]}
+max_turns: 40
+out: runs/eval-rl.json

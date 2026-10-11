@@ -1,0 +1,57 @@
+# Stage 2 on one A100 40GB: simulation-based RL from the merged SFT model, against the built-in bots.
+#   PYTHONPATH=ml python -m polyrl.rl --config ml/configs/rl.yaml
+model:
+  name: runs/sft-qwen3.5-4b/merged
+  dtype: bfloat16
+  gradient_checkpointing: true
+  max_length: 7168
+lora:                      # a fresh adapter on top of the SFT weights; switching it off gives the KL reference
+  r: 32
+  alpha: 64
+  dropout: 0.0
+gen:
+  backend: hf              # or vllm (pip install vllm): several times faster rollouts, same results format
+  max_new_tokens: 768
+  temperature: 1.0
+reward:
+  score_scale: 300
+  w_score: 1.0
+  w_rel: 0.5
+  w_income: 0.1
+  w_city: 0.5
+  w_invalid: 0.15
+  w_parse: 1.5
+  w_death: 3.0
+  final_scale: 3000
+  w_win: 1.0
+  w_rank: 0.5
+rules: polytopia
+targets: ml/data/sft/targets.json
+output_dir: runs/rl-qwen3.5-4b
+iterations: 300
+trunks: 2                  # copies of the same game per iteration (game-level advantage across them)
+group_size: 6              # action lists sampled per model turn (turn-level GRPO group)
+horizon: 1                 # measure after the rivals reply; 2-3 also lets the bot continue for us (longer view, costlier)
+trunk_greedy: true
+trunk_epsilon: 0.15
+episode_weight: 0.5
+lr: 1.0e-5
+kl_coef: 0.02
+clip_low: 0.2
+clip_high: 0.28
+ppo_epochs: 1
+minibatches: 2
+max_tokens_per_batch: 12288
+max_prompt_tokens: 5120
+sim_procs: 4
+save_every: 10
+eval_every: 25
+eval_games: 8
+curriculum:
+  - until: 40              # small maps, weak bots, short games: learn to act legally and grow
+    sample: {sizes: {tiny: 1, small: 1}, players: [2, 3], difficulties: {easy: 1, normal: 1}, modes: {score: 1}, turnLimits: [15, 20]}
+  - until: 120
+    sample: {sizes: {small: 1, normal: 1}, players: [2, 4], difficulties: {normal: 1, hard: 1}, modes: {score: 1}, turnLimits: [20, 25, 30]}
+  - until: null            # full games against hard and crazy bots
+    sample: {sizes: {small: 1, normal: 2, large: 1}, players: [2, 6], difficulties: {hard: 2, crazy: 1}, modes: {score: 4, domination: 1}, turnLimits: [25, 30, 35]}
+    max_turns: 40

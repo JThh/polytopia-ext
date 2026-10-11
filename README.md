@@ -18,6 +18,7 @@ The whole game runs in the browser (one self-contained `index.html`). Play solo 
 | `dev-server.js` | Local preview that mimics Vercel, with in-memory rooms and leaderboard |
 | `vercel.json` | Build command, output folder, headers |
 | `test/` | Headless rule, determinism, multiplayer and balance checks (see [Tests](#tests)) |
+| `ml/` | Training a language model to play The Battle of Polytopia with this engine as its simulator (see [ml/README.md](ml/README.md)) |
 
 ## Run it locally
 
@@ -103,6 +104,10 @@ node test/multi.js                # 2–4 people per game, with seats leaving an
 node test/balance.js 8 2          # fairness: every tribe pairing, both seat orders (args: seeds per pair, players)
 node test/pair.js hard easy 12    # one bot difficulty against another
 ```
+
+## Train a model to play Polytopia
+
+`ml/` turns the engine into a training simulator for a language model that reads a Polytopia game state and answers with typed actions: a Polytopia ruleset, bot-vs-bot SFT data, supervised fine-tuning, simulation-based RL against the bots, and a JSON bridge for real Polytopia clients. Start with [ml/README.md](ml/README.md); `npm run test:ml` runs its simulator tests.
 
 ## Notes and limits
 

@@ -3225,7 +3225,11 @@ for (const k of TT.UNIT_ORDER) {
 }
 AI.ROLE = ROLE;
 
+// Optional rule-variant hooks (TT.AIHOOKS), unset in the game itself: techValue(st, pid, k, ctx) -> number|null,
+// buildPop(st, pid, x, y, k) -> population a build would add, skipBuild { key: true }, noWalls (walls not for sale).
 function techValue(st, pid, k, ctx) {
+  const H = TT.AIHOOKS;
+  if (H && H.techValue) { const hv = H.techValue(st, pid, k, ctx); if (hv != null) return hv; }
   const t = ctx.terr, w = ctx.war, P = st.players[pid];
   const rem = TT.TECH_ORDER.filter(q => !P.techs[q]).length;
   switch (k) {
@@ -3259,7 +3263,7 @@ function techValue(st, pid, k, ctx) {
 }
 
 function econCandidates(st, pid, ctx, D, jitter) {
-  const W = st.W, P = st.players[pid];
+  const W = st.W, P = st.players[pid], H = TT.AIHOOKS;
   const out = [];
   const threatened = ctx.threatened.length > 0;
   const lateF = st.turn > 22 ? 0.75 : 1;
@@ -3279,11 +3283,11 @@ function econCandidates(st, pid, ctx, D, jitter) {
     const x = i % W, y = (i / W) | 0;
     for (const k of TT.buildOptions(st, pid, x, y)) {
       const B = TT.BUILD[k];
-      if (!P.techs[B.tech] || k === 'clear' || k === 'road' || k === 'grow') continue;
+      if (!P.techs[B.tech] || k === 'clear' || k === 'road' || k === 'grow' || (H && H.skipBuild && H.skipBuild[k])) continue;
       if (k === 'market') { const gain = TT.marketYield(st, i); out.push({ kind: 'build', key: k, cost: B.cost, pri: gain * 3.2 / B.cost * jitter(), exec: () => TT.build(st, x, y, k) }); continue; }
       const c = st.cities[tl.city];
-      const need = c.level + 1 - c.pop;
-      let v = B.pop * 2 * lateF + (B.pop >= need ? 3 + (c.capital ? 0.5 : 0) : B.pop / need * 1.2);
+      const need = c.level + 1 - c.pop, pop = H && H.buildPop ? H.buildPop(st, pid, x, y, k) : B.pop;
+      let v = pop * 2 * lateF + (pop >= need ? 3 + (c.capital ? 0.5 : 0) : pop / need * 1.2);
       if (k === 'port') v += ctx.wantsPort && !ctx.hasPort ? 9 : 0;
       if (k === 'whale') v += 3;
       const cost = Math.max(1, B.cost);
@@ -3291,7 +3295,7 @@ function econCandidates(st, pid, ctx, D, jitter) {
     }
   }
   // walls
-  if (P.techs.construction) for (const c of ctx.myCities) {
+  if (P.techs.construction && !(H && H.noWalls)) for (const c of ctx.myCities) {
     if (c.walls) continue;
     const th = ctx.cityThreat[c.id];
     if (th.threat > 1) out.push({ kind: 'walls', cost: 5, pri: (th.threat * 0.4 + (c.capital ? 1 : 0)) / 5 * 2, exec: () => TT.buildWalls(st, c.id) });
