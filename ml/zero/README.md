@@ -278,7 +278,7 @@ ruleset landed on this branch; the live run follows below.
 | legal actions per decision (bot games) | classic: mean 46, 95th percentile 137, max 257; live: mean 41 to 52 |
 | network inference, 1 CPU thread | 480 positions/s (batch 1), 630 (batch 8), 750 (batch 32) |
 | training step, batch 256, 4 threads | about 0.9 s (forward + backward + AdamW) |
-| self-play, 4 workers, tiny 1v1 maps | 24 games (about 2,000 to 3,600 positions) in 13 to 28 s |
+| self-play iteration, 4 workers, tiny 1v1 maps | 24 games (2,000 to 4,300 positions) plus training: 13 to 60 s |
 | warm-start data | classic: 1,200 bot games -> 60k positions in 52 s; live: 1,500 games -> 84k positions in 80 s |
 | warm start (classic), 2 epochs (453 steps) | val hit rate 0.18 -> 0.62 (net's top action is one the bot takes that turn), val value MSE 0.47 -> 0.35 (outcome variance 0.61) |
 | end-to-end test (`tests/test_pipeline.py`) | about 10 s |
