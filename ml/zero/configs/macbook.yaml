@@ -27,13 +27,16 @@ selfplay:
   play: {concurrent: 6, full_prob: 0.25, fast_simulations: 4}
   heuristic: 0.5          # search leaf value blended with the score margin, annealed to 0 ...
   heuristic_anneal: 100   # ... over this many iterations
+  policy_warmup: 10       # value-only self-play for the first iterations; the anchor holds the policy
   snapshot_every: 5
   league_size: 6
   curriculum:
-    - until: 30            # 1v1 on tiny maps, short games
+    - until: 30            # 1v1 on tiny maps, short games, against opponents it can sometimes beat
       sample: {sizes: {tiny: 1}, players: [2, 2], modes: {score: 1}, turnLimits: [20]}
+      opponents: {self: 0.4, "bot:normal": 0.3, "bot:hard": 0.2, past: 0.1}
     - until: 120
       sample: {sizes: {tiny: 1, small: 2}, players: [2, 3], modes: {score: 1}, turnLimits: [25, 30]}
+      opponents: {self: 0.3, "bot:hard": 0.3, "bot:crazy": 0.2, past: 0.2}
     - until: null          # full games, up to 4 tribes, some domination
       sample: {sizes: {small: 2, normal: 2, large: 1}, players: [2, 4], modes: {score: 4, domination: 1}, turnLimits: [30]}
       max_turns: 40

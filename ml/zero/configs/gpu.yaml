@@ -23,13 +23,16 @@ selfplay:
   play: {concurrent: 8, full_prob: 0.25, fast_simulations: 8}
   heuristic: 0.5
   heuristic_anneal: 150
+  policy_warmup: 10
   snapshot_every: 5
   league_size: 10
   curriculum:
     - until: 20
       sample: {sizes: {tiny: 1, small: 1}, players: [2, 2], modes: {score: 1}, turnLimits: [20, 25]}
+      opponents: {self: 0.4, "bot:normal": 0.3, "bot:hard": 0.2, past: 0.1}
     - until: 80
       sample: {sizes: {small: 2, normal: 1}, players: [2, 3], modes: {score: 1}, turnLimits: [25, 30]}
+      opponents: {self: 0.3, "bot:hard": 0.3, "bot:crazy": 0.2, past: 0.2}
     - until: null
       sample: {sizes: {small: 1, normal: 2, large: 2, huge: 1}, players: [2, 6], modes: {score: 3, domination: 1}, turnLimits: [30, 35]}
       max_turns: 45

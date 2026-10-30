@@ -18,10 +18,15 @@ evaluation (see [Evaluation](#evaluation)).
 
 > **Status.** Everything below runs and is tested on CPU under both rulesets (Node tests plus pytest, including an
 > end-to-end run: bot data, warm start, self-play with a league, evaluation and resume). The numbers in
-> [Measured so far](#measured-so-far) come from a 4-core Linux VM in one session: a first run under the classic
-> rules (which exposed the instability fixed in [Stabilising self-play](#stabilising-self-play)) and a short run
-> under the live rules. They show the machinery working and the starting point. They do not show crazy being
-> beaten: that takes the long training run this document proposes. No trained weights are included.
+> [Measured so far](#measured-so-far) come from a 4-core Linux VM in one session, about 3 CPU-hours of training:
+> - Classic rules: the first self-play run collapsed. With the fixes in
+>   [Stabilising self-play](#stabilising-self-play), 10 iterations took the net from 2 to 10% to 14.6% wins
+>   against crazy, level with the hard bot.
+> - Live rules: 20 iterations did not improve on the warm start ([Live rules](#live-rules) says why and what
+>   changed).
+>
+> Crazy is not beaten yet: that takes the long training run this document proposes. No trained weights are
+> included.
 
 ## Quick start
 
@@ -82,7 +87,7 @@ Plain AlphaZero does not fit Polytopia out of the box. Each difficulty below has
 ```
  ml/zero/sim (Node)                                         ml/zero/polyzero (Python)
  ┌──────────────────────────────────────────────┐          ┌──────────────────────────────────────────┐
- │ ../../sim/tt.js + rulesets/polytopia.js       │          │ net.py      PolyNet (conv + pointer head) │
+ │ ../../sim/tt.js + rulesets/polytopia_live.js  │          │ net.py      PolyNet (conv + pointer head) │
  │   the same Polytopia rules as ml/             │          │ mcts.py     Gumbel AlphaZero search       │
  │ core.js   observation bytes, atomic legal     │  JSON    │ play.py     many games at once, batched   │
  │           actions, apply, outcome             │◀────────▶│ workers.py  self-play processes           │
@@ -92,8 +97,8 @@ Plain AlphaZero does not fit Polytopia out of the box. Each difficulty below has
  └──────────────────────────────────────────────┘          └──────────────────────────────────────────┘
 ```
 
-The rules live only in the JavaScript engine, under the Polytopia ruleset of `ml/sim/rulesets/polytopia.js` (the
-classic game, not the browser game's variant). A search node is a copy of the game state held by the Node process
+The rules live only in the JavaScript engine, under the live ruleset `ml/sim/rulesets/polytopia_live.js` (or the
+classic `polytopia.js`; never the browser game's own variant). A search node is a copy of the game state held by the Node process
 (about 0.3 ms per copy). Python holds the tree, the network and the training loop. One round trip frees finished
 trees, plays the actions searches have settled on, and expands every leaf that every running search asked for. The
 new leaves of all games are then scored in one network call.
@@ -197,16 +202,17 @@ bots. It records a sample of their atomic actions as (observation, legal actions
 actions within a turn is mostly arbitrary, so the policy target is the bot's next action (half the mass) plus every
 action it takes later that turn that is already legal (the other half). Hard and crazy actions get full policy
 weight, normal a quarter. Every position, whoever played it, gets a value target: that seat's final outcome. Each
-end_turn also yields an afterstate position (value only). 1,200 games give 60k positions in under a minute on 4
-cores.
+end_turn also yields an afterstate position (value only). On 4 cores, 1,500 live-rules games give 84k positions in
+80 s.
 
 ### Stage 1: self-play iterations
 
 Each iteration:
 
 1. `workers` processes play `games_per_iter` games with the current weights. The opponent is drawn per game from
-   the league: `self` (every seat is the current net, all recorded), `bot:crazy`, `bot:hard`, or `past` (a recent
-   snapshot). The learner's seat is random.
+   the league: `self` (every seat is the current net, all recorded), a bot (`bot:normal`, `bot:hard`,
+   `bot:crazy`), or `past` (a recent snapshot). Each curriculum stage can set its own mix: crazy joins once the net
+   can sometimes win. The learner's seat is random.
 2. Every decision of a learner seat becomes a position: the improved policy π′ (full searches only), the game's
    outcome for that seat, and, at each end_turn, the afterstate.
 3. The learner takes `replay_ratio × new positions / batch_size` AdamW steps on a FIFO replay buffer (150k). Loss
@@ -221,8 +227,13 @@ from a rout and gives lost games a gradient.
 as with the KL-to-human-play term in AlphaStar. It keeps the policy close to competent play while the value net is
 still learning what single actions are worth.
 
-**Curriculum** (`macbook.yaml`): 1v1 on tiny maps for 20 turns, then tiny/small maps with 2 to 3 tribes, then small
-to large maps with 2 to 4 tribes and some domination games.
+**Value warm-up** (`selfplay.policy_warmup`, 10 iterations): at first, self-play positions train only the value
+head, and the policy is held by the anchor. Search targets start steering the policy only once the value has
+adapted to on-policy games (see [the live run](#live-rules)).
+
+**Curriculum** (`macbook.yaml`): 1v1 on tiny maps for 20 turns (against self, normal, hard and past), then
+tiny/small maps with 2 to 3 tribes (crazy joins), then small to large maps with 2 to 4 tribes, some domination games
+and the full league.
 
 ## Evaluation
 
@@ -232,8 +243,8 @@ the network is in the seat, and once each baseline bot is. The other seats are c
 | who in our seat | what it shows |
 | --- | --- |
 | `net:eval` | PolyZero, full deterministic search (32 simulations), no bonus stars |
-| `bot:crazy` | crazy itself (+2 stars a turn): what "as good as crazy" means on these games |
-| `bot:hard` | crazy's algorithm without the bonus: the same handicap PolyZero plays with |
+| `bot:crazy` | crazy itself (+3 stars a turn over a human under the live rules, +2 classic): what "as good as crazy" means on these games |
+| `bot:hard` | crazy's algorithm with a smaller bonus (+1 live, 0 classic) |
 
 It reports win rate with a 95% Wilson interval, average rank, utility, score and score share, plus the **paired
 utility difference** to each baseline (mean ± standard error over the same games). **PolyZero surpasses crazy on a
@@ -246,9 +257,10 @@ Crazy's head start, measured in the simulator with paired seats (score games):
 | --- | --- | --- | --- | --- | --- |
 | crazy, 1v1, tiny map, 20 turns (120 games) | +3 | 47% | +2 | 55% | 50% |
 | hard, same | +1 | 22% | 0 | 20% | 50% |
-| normal, same | 0 | 12.5% | 0 | | 50% |
+| normal, same | 0 | 12.5% | 0 | not measured | 50% |
 | crazy, 1v1, small map, 30 turns (60 games) | +3 | 42% | +2 | 45% | 50% |
 | hard, same | +1 | 22% | 0 | 28% | 50% |
+| normal, same | 0 | not measured | 0 | 18% | 50% |
 | hard vs 3 crazy, normal map, 30 turns (60 games) | +1 | 5% | 0 | 10% | 25% |
 
 "Bonus" is stars a turn over a human player. Under the live rules, the bot playing at a human's income (normal,
@@ -309,7 +321,38 @@ The same run with both on (same warm-start net, same settings otherwise), 10 ite
 | without blend and anchor | 5.1 -> 1.7 | 0% wins, score 375 |
 | with blend (λ = 0.5, annealed) and anchor (20%) | 5.1 -> 4.6 | **14.6% wins** (warm start: 2 to 10%), score 1749; paired utility vs the hard bot −0.03 ± 0.11, i.e. level with it |
 
-LIVE_RESULTS
+### Live rules
+
+The same recipe under the live rules: warm start from 1,500 bot games (2 epochs, val hit rate 0.66, value MSE
+0.28), then self-play on tiny 1v1 maps with the opponent mix of the classic run (40% crazy). 48 paired games vs
+crazy; on these games crazy in our seat wins 48% and hard 19%.
+
+| net | search in the eval | win | score | score share |
+| --- | --- | --- | --- | --- |
+| warm start | none (policy argmax) | 2.1% | 2427 | 0.28 |
+| warm start | 16 simulations | 2.1% | 1638 | 0.19 |
+| warm start | 16 simulations + blend 0.5 | 6.2% | 2214 | 0.25 |
+| + 10 iterations (blend + anchor) | 16 + blend 0.45 | 0% | 1248 | 0.13 |
+| + 10 iterations, value warm-up (policy held by the anchor) | 16 + blend 0.45 | 0% | 1784 | 0.19 |
+| + 20 iterations, value warm-up (search targets from iteration 11) | 16 + blend 0.40 | 2.1% | 1300 | 0.15 |
+
+Nothing collapsed: 3.7 to 5.6 actions a turn throughout. But 20 iterations did not improve on the warm start
+either. The diagnostics point at the training signal rather than the search:
+
+- The warm-start net is **eliminated in about half its games** against crazy's +3★ economy on tiny maps. The
+  learner won 0 to 14% of its self-play games against crazy. So 40% of the games ended at the same outcome near −1,
+  and the value head had little to learn from them.
+- Without the blend, search on top of the live warm-start value net plays worse than the policy alone. The value
+  net does not yet know what single actions are worth under the live rules. Search targets distilled from it
+  cannot beat the bot prior yet.
+- What the search changes is sensible (more moves and research, less end_turn and training), so the tree is not
+  the problem.
+
+The recipes now start the league against opponents the net can sometimes beat. The first curriculum stage uses
+self, normal, hard and past; crazy joins in stage two and gets the full 40% only in stage three. The value warm-up
+stays on. The next levers, in order: larger budgets for the searches that become policy targets (32 to 64),
+TD(λ) value targets over the player's own turns, and the longer games where live-only mechanics (monuments,
+growing temples, embassies) pay off. All but TD(λ) are config changes.
 
 
 ## Compute plan
@@ -372,7 +415,7 @@ PolyCommand bridge of `ml/bridge/README.md`. What remains:
 | `polyzero/train.py` | warm start, self-play iterations, league, curriculum, logging, resume |
 | `polyzero/evaluate.py` | paired evaluation against the bots |
 | `polyzero/data.py` | warm-start loader, replay buffer, batches, losses |
-| `polyzero/sim.py`, `config.py` | simulator client and outcome utility; YAML configs with `key=value` overrides |
+| `polyzero/sim.py`, `config.py` | simulator client, outcome utility and score-margin heuristic; YAML configs with `key=value` overrides |
 | `configs/` | `macbook.yaml`, `gpu.yaml`, `eval.yaml` |
 | `scripts/pipeline.sh` | the whole pipeline |
 | `test/core.js`, `tests/` | Node checks; pytest (search unit tests, end-to-end pipeline) |
@@ -380,6 +423,6 @@ PolyCommand bridge of `ml/bridge/README.md`. What remains:
 ## Tests
 
 ```bash
-npm run test:zero                  # Node: action-space coverage, legality, fog, server protocol (~3 s)
-cd ml/zero && python -m pytest     # search on toy trees + end-to-end CPU pipeline (~15 s)
+npm run test:zero                  # Node, live and classic rules: action-space coverage, legality, fog, server (~6 s)
+cd ml/zero && python -m pytest     # search on toy trees + end-to-end CPU pipeline with resume (~10 s)
 ```

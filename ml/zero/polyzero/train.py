@@ -36,9 +36,11 @@ from .play import PlayConfig
 from .sim import Sim
 from .workers import Pool
 
-DEFAULT_CURRICULUM = [
-    {"until": 30, "sample": {"sizes": {"tiny": 1}, "players": [2, 2], "modes": {"score": 1}, "turnLimits": [20]}},
-    {"until": 120, "sample": {"sizes": {"tiny": 1, "small": 2}, "players": [2, 3], "modes": {"score": 1}, "turnLimits": [25, 30]}},
+DEFAULT_CURRICULUM = [  # stages may also set "opponents" (the league mix); otherwise selfplay.opponents applies
+    {"until": 30, "sample": {"sizes": {"tiny": 1}, "players": [2, 2], "modes": {"score": 1}, "turnLimits": [20]},
+     "opponents": {"self": 0.4, "bot:normal": 0.3, "bot:hard": 0.2, "past": 0.1}},
+    {"until": 120, "sample": {"sizes": {"tiny": 1, "small": 2}, "players": [2, 3], "modes": {"score": 1}, "turnLimits": [25, 30]},
+     "opponents": {"self": 0.3, "bot:hard": 0.3, "bot:crazy": 0.2, "past": 0.2}},
     {"until": None, "sample": {"sizes": {"small": 2, "normal": 2, "large": 1}, "players": [2, 4], "modes": {"score": 4, "domination": 1}, "turnLimits": [30]},
      "max_turns": 40},
 ]
@@ -77,6 +79,8 @@ class SelfPlayConfig:
     league_size: int = 6
     heuristic: float = 0.5       # search leaf value mix with the score margin (SearchConfig.heuristic) ...
     heuristic_anneal: int = 100  # ... decayed linearly to 0 over this many iterations (0: kept constant)
+    policy_warmup: int = 10      # first iterations: self-play trains the value head only (the anchor holds the
+                                 # policy), so search targets steer the policy only once the value has adapted
 
 
 def heuristic_at(sp: SelfPlayConfig, it: int) -> float:
@@ -182,7 +186,8 @@ def warm_start(net, cfg: TrainConfig, device, out: Path, data: list[dict]) -> No
 def selfplay_specs(cfg: TrainConfig, it: int, league: list[str], rng: random.Random) -> list[dict]:
     sp = cfg.selfplay
     stage = next((c for c in sp.curriculum if c.get("until") is None or it < c["until"]), sp.curriculum[-1])
-    kinds, weights = list(sp.opponents), list(sp.opponents.values())
+    opponents = stage.get("opponents") or sp.opponents  # a stage may set its own league mix
+    kinds, weights = list(opponents), list(opponents.values())
     specs = []
     for _ in range(sp.games_per_iter):
         kind = rng.choices(kinds, weights)[0]
@@ -256,6 +261,9 @@ def main(argv=None):
             results = pool.run(specs, str(latest), cfg.selfplay.search, cfg.eval.search, cfg.selfplay.play, device=cfg.actor_device, seed=cfg.seed * 7919 + it)
             t_play = time.time() - t0
             new = [s for r in results for s in r["samples"]]
+            if it < cfg.selfplay.policy_warmup:
+                for s in new:
+                    s["pw"] = np.float32(0.0)
             buffer.add(new)
             steps = math.ceil(len(new) * cfg.replay_ratio / cfg.optim.batch_size) if len(buffer) >= cfg.min_buffer else 0
             m = _train_steps(net, opt, buffer, steps, cfg.optim, device, rng, pad, anchor) if steps else {}

@@ -26,8 +26,8 @@ def test_warm_start_selfplay_eval(tmp_path):
             "net.channels=16", "net.blocks=1", "net.policy_hidden=16", "net.value_hidden=16",
             "iterations=2", "workers=0", "min_buffer=1", "eval_every=2", "device=cpu",
             "selfplay.games_per_iter=3", "selfplay.snapshot_every=1", "selfplay.search.simulations=4", "selfplay.play.fast_simulations=2",
-            "selfplay.play.concurrent=3", "selfplay.opponents={self: 1, past: 1, 'bot:crazy': 1}",
-            f"selfplay.curriculum=[{{until: null, sample: {TINY}}}]",
+            "selfplay.play.concurrent=3", "selfplay.policy_warmup=1", "selfplay.opponents={self: 1, past: 1, 'bot:crazy': 1}",
+            f"selfplay.curriculum=[{{until: 1, sample: {TINY}, opponents: {{self: 1, 'bot:normal': 1}}}}, {{until: null, sample: {TINY}}}]",
             f"eval.suites=[{{name: duel_tiny, games: 2, sample: {TINY}}}]", "eval.search.simulations=4"]
     train.main(args)
 
