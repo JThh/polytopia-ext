@@ -28,6 +28,9 @@ The simulator follows **The Battle of Polytopia** rules, not the browser game's 
 game through a JSON bridge. The same prompts and actions work with a real
 Polytopia client: see [bridge/README.md](bridge/README.md).
 
+> A second approach lives in [zero/](zero/README.md): PolyZero, a small network with AlphaZero-style search trained
+> by self-play on the same Polytopia rules. It needs no GPU and shares this directory's simulator and action tuples.
+
 > Status: everything here runs and is tested end to end on CPU with a tiny random-weight Qwen3.5-architecture
 > model (`tests/test_train_smoke.py`). The real 4B training runs on your GPU. No trained weights are included.
 

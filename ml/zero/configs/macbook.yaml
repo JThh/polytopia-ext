@@ -1,0 +1,55 @@
+# PolyZero on a MacBook Air (Apple silicon, 8 cores, 16 GB). Everything runs natively: the simulator in Node, the
+# network in PyTorch (self-play on the CPU cores, gradient steps on the GPU through "mps").
+#
+#   node ml/zero/sim/gen_bc.js --games 2000 --workers 6 --keep 0.08 --out runs/zero/bc    # warm-start data, ~1.5 min
+#   PYTHONPATH=ml/zero python -m polyzero.train --config ml/zero/configs/macbook.yaml
+#
+# Re-running the command resumes. A fanless Air throttles under sustained load: if iterations slow down, lower
+# `workers` to 4.
+net:
+  channels: 48             # ~0.25M parameters
+  blocks: 4
+  policy_hidden: 96
+  value_hidden: 96
+optim:
+  lr: 1.0e-3
+  bc_mix: 0.2             # a fifth of every batch from the warm-start positions (anchor)
+  batch_size: 256
+  value_weight: 1.0
+warm_start:
+  data: runs/zero/bc       # null to skip the warm start and learn from random play (much slower)
+  epochs: 3
+  lr: 2.0e-3
+selfplay:
+  games_per_iter: 24
+  opponents: {self: 0.3, "bot:crazy": 0.4, "bot:hard": 0.15, past: 0.15}
+  search: {simulations: 16, max_considered: 8}
+  play: {concurrent: 6, full_prob: 0.25, fast_simulations: 4}
+  heuristic: 0.5          # search leaf value blended with the score margin, annealed to 0 ...
+  heuristic_anneal: 100   # ... over this many iterations
+  snapshot_every: 5
+  league_size: 6
+  curriculum:
+    - until: 30            # 1v1 on tiny maps, short games
+      sample: {sizes: {tiny: 1}, players: [2, 2], modes: {score: 1}, turnLimits: [20]}
+    - until: 120
+      sample: {sizes: {tiny: 1, small: 2}, players: [2, 3], modes: {score: 1}, turnLimits: [25, 30]}
+    - until: null          # full games, up to 4 tribes, some domination
+      sample: {sizes: {small: 2, normal: 2, large: 1}, players: [2, 4], modes: {score: 4, domination: 1}, turnLimits: [30]}
+      max_turns: 40
+eval:
+  suites:
+    - {name: duel_small, games: 24, sample: {sizes: {small: 1}, players: [2, 2], modes: {score: 1}, turnLimits: [30]}}
+    - {name: ffa4_normal, games: 16, sample: {sizes: {normal: 1}, players: [4, 4], modes: {score: 1}, turnLimits: [30]}}
+  search: {simulations: 32, gumbel_scale: 0.0}
+  play: {concurrent: 8, full_prob: 1.0}
+output_dir: runs/zero
+iterations: 300
+buffer_size: 150000
+replay_ratio: 4.0
+min_buffer: 2000
+workers: 6
+device: auto               # mps on Apple silicon
+actor_device: cpu
+eval_every: 10
+seed: 1

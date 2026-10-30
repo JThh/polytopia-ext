@@ -1,0 +1,16 @@
+# Paired evaluation against the crazy bot (see polyzero/evaluate.py).
+#   PYTHONPATH=ml/zero python -m polyzero.evaluate --config ml/zero/configs/eval.yaml weights=runs/zero/latest.pt
+weights: runs/zero/latest.pt
+opponent: "bot:crazy"
+baselines: ["bot:crazy", "bot:hard"]
+suites:
+  - {name: duel_small, games: 48, sample: {sizes: {small: 1}, players: [2, 2], modes: {score: 1}, turnLimits: [30]}}
+  - {name: duel_normal, games: 32, sample: {sizes: {normal: 1}, players: [2, 2], modes: {score: 1}, turnLimits: [30]}}
+  - {name: ffa4_normal, games: 32, sample: {sizes: {normal: 1}, players: [4, 4], modes: {score: 1}, turnLimits: [30]}}
+  - {name: domination_duel, games: 24, sample: {sizes: {small: 1}, players: [2, 2], modes: {domination: 1}}, max_turns: 50}
+search: {simulations: 32, max_considered: 8, gumbel_scale: 0.0}
+play: {concurrent: 8, full_prob: 1.0}
+workers: 6
+device: cpu
+seed: 20000
+out: runs/zero/eval.jsonl

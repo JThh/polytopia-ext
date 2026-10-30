@@ -1,0 +1,54 @@
+# PolyZero on a workstation or cloud box (32+ cores, one GPU): a larger network, a bigger search budget and more
+# games per iteration. Same pipeline as macbook.yaml.
+#
+#   node ml/zero/sim/gen_bc.js --games 6000 --workers 16 --keep 0.08 --out runs/zero-gpu/bc
+#   PYTHONPATH=ml/zero python -m polyzero.train --config ml/zero/configs/gpu.yaml
+net:
+  channels: 64             # ~0.57M parameters: still small enough to play on a laptop afterwards
+  blocks: 6
+  policy_hidden: 128
+  value_hidden: 128
+optim:
+  lr: 1.0e-3
+  bc_mix: 0.2
+  batch_size: 512
+warm_start:
+  data: runs/zero-gpu/bc
+  epochs: 3
+  lr: 2.0e-3
+selfplay:
+  games_per_iter: 128
+  opponents: {self: 0.35, "bot:crazy": 0.35, "bot:hard": 0.1, past: 0.2}
+  search: {simulations: 32, max_considered: 16}
+  play: {concurrent: 8, full_prob: 0.25, fast_simulations: 8}
+  heuristic: 0.5
+  heuristic_anneal: 150
+  snapshot_every: 5
+  league_size: 10
+  curriculum:
+    - until: 20
+      sample: {sizes: {tiny: 1, small: 1}, players: [2, 2], modes: {score: 1}, turnLimits: [20, 25]}
+    - until: 80
+      sample: {sizes: {small: 2, normal: 1}, players: [2, 3], modes: {score: 1}, turnLimits: [25, 30]}
+    - until: null
+      sample: {sizes: {small: 1, normal: 2, large: 2, huge: 1}, players: [2, 6], modes: {score: 3, domination: 1}, turnLimits: [30, 35]}
+      max_turns: 45
+eval:
+  suites:
+    - {name: duel_small, games: 48, sample: {sizes: {small: 1}, players: [2, 2], modes: {score: 1}, turnLimits: [30]}}
+    - {name: duel_normal, games: 48, sample: {sizes: {normal: 1}, players: [2, 2], modes: {score: 1}, turnLimits: [30]}}
+    - {name: ffa4_normal, games: 32, sample: {sizes: {normal: 1}, players: [4, 4], modes: {score: 1}, turnLimits: [30]}}
+    - {name: ffa6_large, games: 24, sample: {sizes: {large: 1}, players: [6, 6], modes: {score: 1}, turnLimits: [30]}}
+    - {name: domination_duel, games: 24, sample: {sizes: {small: 1}, players: [2, 2], modes: {domination: 1}}, max_turns: 50}
+  search: {simulations: 64, max_considered: 16, gumbel_scale: 0.0}
+  play: {concurrent: 8, full_prob: 1.0}
+output_dir: runs/zero-gpu
+iterations: 600
+buffer_size: 600000
+replay_ratio: 4.0
+min_buffer: 10000
+workers: 30
+device: cuda
+actor_device: cpu
+eval_every: 10
+seed: 1
