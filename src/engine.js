@@ -52,6 +52,9 @@ TT.UNITS = {
 };
 TT.UNIT_ORDER = ['warrior', 'rider', 'archer', 'defender', 'shaman', 'balloon', 'swordsman', 'mindbender', 'cloak', 'knight', 'catapult'];
 
+// Optional rule-variant hooks, unset in the game itself (the ML simulator's rulesets set them; see ml/sim/rulesets)
+TT.HOOKS = {};
+
 TT.NAVAL = {
   boat:       { name: 'Boat',       cost: 0,  atk: 1, def: 1, move: 2, range: 2, skills: ['dash', 'carry'], tech: 'fishing' },
   ship:       { name: 'Ship',       cost: 5,  atk: 2, def: 2, move: 3, range: 2, skills: ['dash', 'carry'], tech: 'sailing' },
@@ -568,7 +571,7 @@ function spawnUnit(st, type, owner, x, y, home, ready) {
   const u = { id: st.nextId++, type, owner, x, y, hp: B.hp, vet: false, kills: 0, naval: null, home: home == null ? -1 : home,
     canMove: !!ready, canAttack: !!ready, movedDist: 0, frozen: 0, slow: false };
   const tl = st.tiles[y * st.W + x];
-  if (isWater(tl.t)) u.naval = 'boat';
+  if (isWater(tl.t) && !tl.bridge) u.naval = TT.HOOKS.embarkKind ? TT.HOOKS.embarkKind(st, u) : 'boat';
   st.units.push(u);
   bump(st);
   unitReveal(st, u);
@@ -595,7 +598,7 @@ TT.unitName = u => u.naval ? TT.NAVAL[u.naval].name + ' (' + TT.UNITS[u.type].na
 TT.effRange = function (st, u, x, y, S) {
   S = S || TT.stats(st, u);
   const tl = st.tiles[y * st.W + x];
-  return S.range + (S.range > 1 && tl.t === T.MOUNTAIN ? 1 : 0);
+  return S.range + (S.range > 1 && tl.t === T.MOUNTAIN && !TT.HOOKS.noMountainRange ? 1 : 0);
 };
 
 TT.unitValue = function (st, u) {
@@ -639,9 +642,9 @@ function enterMode(st, u, P, fly, toIdx) {
     if (tt.t === T.MOUNTAIN && !P.techs.climbing) return 0;
     return 2;
   }
-  if (isWater(tt.t)) return (tt.imp === 'port' && tt.owner === u.owner) ? 2 : 0;
+  if (isWater(tt.t)) return (tt.imp === 'port' && tt.owner === u.owner) ? 2 : tt.bridge ? 1 : 0;
   if (tt.t === T.MOUNTAIN) { if (!P.techs.climbing) return 0; return P.tribe === 'ironpeak' ? 1 : 2; }
-  if (tt.t === T.FOREST) return P.tribe === 'verdant' ? 1 : 2;
+  if (tt.t === T.FOREST) return P.tribe === 'verdant' || (TT.HOOKS.noForestStop && TT.HOOKS.noForestStop(st, u)) ? 1 : 2;
   return 1;
 }
 TT.enterMode = enterMode;
@@ -652,7 +655,7 @@ TT.reach = function (st, u, moveOverride) {
   const W = st.W, mv = moveOverride != null ? moveOverride : S.move;
   const fly = has(S, 'fly');
   const occ = TT.occ(st);
-  const zoc = fly ? null : zocMap(st, u.owner);
+  const zoc = fly || (TT.HOOKS.ignoresZoc && TT.HOOKS.ignoresZoc(st, u)) ? null : zocMap(st, u.owner);
   const res = new Map(), done = new Set();
   const start = u.y * W + u.x;
   res.set(start, { s: 0, n: 0, p: -1, stop: false, occ: false });
@@ -678,7 +681,9 @@ TT.reach = function (st, u, moveOverride) {
       if (!mode) continue;
       const o = occ[ni];
       if (o && o.owner !== u.owner) continue;
-      const onRoad = fromRoad && isRoad(st.tiles[ni]) && !TT.isWater(st.tiles[ni].t);
+      const ntl = st.tiles[ni];
+      const onRoad = fromRoad && isRoad(ntl) && (!TT.isWater(ntl.t) || !!ntl.bridge) &&
+        !(TT.HOOKS.roadBlocked && (TT.HOOKS.roadBlocked(st, u, st.tiles[ci]) || TT.HOOKS.roadBlocked(st, u, ntl)));
       if (onRoad && mode === 2) mode = 1;
       const cost = cn.s + (onRoad ? 0.5 : 1);
       if (cost > mv + 1e-9) continue;
@@ -764,7 +769,7 @@ TT.combat = function (st, a, d, opt) {
   let atk = SA.atk;
   if (has(SA, 'charge')) atk += 0.5 * moved;
   const ta = st.tiles[ay * st.W + ax], td = st.tiles[dy * st.W + dx];
-  const high = !has(SA, 'fly') && ta.e > td.e;
+  const high = !TT.HOOKS.noHighGround && !has(SA, 'fly') && ta.e > td.e;
   if (high) atk *= 1.25;
   const defB = TT.defBonus(st, d, dx, dy);
   const aF = atk * ahp / SA.maxHp;
@@ -774,7 +779,7 @@ TT.combat = function (st, a, d, opt) {
   const dmg = Math.round(aF / tot * atk * 4.5);
   const killed = dmg >= dhp;
   let counter = 0;
-  if (!killed) {
+  if (!killed && !(TT.HOOKS.noCounter && TT.HOOKS.noCounter(st, a, d, SA, SD))) {
     const dist = cheb(ax, ay, dx, dy);
     if (dist <= TT.effRange(st, d, dx, dy, SD)) counter = Math.round(dF / tot * SD.def * 4.5);
   }
@@ -789,7 +794,7 @@ function killUnit(st, u, killer, evs) {
     const K = st.players[killer.owner];
     K.kills++; K.power = Math.min(TT.POWER_MAX, K.power + 1);
     killer.kills++;
-    if (!killer.vet && killer.kills >= 3) {
+    if (!killer.vet && killer.kills >= 3 && !(TT.HOOKS.noVeteran && TT.HOOKS.noVeteran(st, killer))) {
       killer.vet = true; killer.hp = TT.stats(st, killer).maxHp;
       evs.push({ type: 'veteran', uid: killer.id, x: killer.x, y: killer.y });
     }
@@ -806,7 +811,7 @@ function canStand(st, u, x, y) {
   if (has(S, 'fly')) return true;
   const tl = st.tiles[y * st.W + x];
   if (u.naval) return isWater(tl.t) && (tl.t !== T.OCEAN || P.techs.sailing);
-  if (isWater(tl.t)) return false;
+  if (isWater(tl.t)) return !!tl.bridge;
   if (tl.t === T.MOUNTAIN && !P.techs.climbing) return false;
   return true;
 }
@@ -835,7 +840,7 @@ TT.move = function (st, uid, tx, ty) {
   const prevNaval = u.naval;
   if (!has(S, 'fly')) {
     if (u.naval && !isWater(tl.t)) { disembark = true; u.naval = null; }
-    else if (!u.naval && isWater(tl.t)) { embark = true; u.naval = 'boat'; }
+    else if (!u.naval && isWater(tl.t) && !tl.bridge) { embark = true; u.naval = TT.HOOKS.embarkKind ? TT.HOOKS.embarkKind(st, u) : 'boat'; }
   }
   const fromX = u.x, fromY = u.y;
   u.x = tx; u.y = ty;
@@ -848,9 +853,9 @@ TT.move = function (st, uid, tx, ty) {
   if (nrev) evs.push({ type: 'reveal', pid: u.owner, n: nrev });
   if (tl.ruin && !isWater(tl.t)) claimRuin(st, u, tl, evs);
   // stomp
-  if (TT.UNITS[u.type].skills.indexOf('stomp') >= 0 && !u.naval) {
+  if (has(TT.stats(st, u), 'stomp')) {
     for (const e of st.units.slice()) {
-      if (e.owner !== u.owner && cheb(e.x, e.y, u.x, u.y) === 1) damage(st, e, 2, u, evs, 'stomp');
+      if (e.owner !== u.owner && cheb(e.x, e.y, u.x, u.y) === 1) damage(st, e, TT.HOOKS.stompDamage ? TT.HOOKS.stompDamage(st, u, e) : 2, u, evs, 'stomp');
     }
   }
   checkWin(st, evs);
@@ -958,10 +963,11 @@ TT.attack = function (st, uid, tid) {
   }
   // splash
   if (has(SA, 'splash')) {
-    const sd = Math.max(1, Math.round(r.dmg / 2));
     for (const e of st.units.slice()) {
       if (e.owner === a.owner || e === d) continue;
-      if (cheb(e.x, e.y, dx0, dy0) === 1) damage(st, e, sd, a, evs, 'splash');
+      if (cheb(e.x, e.y, dx0, dy0) !== 1) continue;
+      const sd = TT.HOOKS.splashDamage ? TT.HOOKS.splashDamage(st, a, e, r) : Math.max(1, Math.round(r.dmg / 2));
+      if (sd > 0) damage(st, e, sd, a, evs, 'splash');
     }
     evs.push({ type: 'splash', x: dx0, y: dy0 });
   }

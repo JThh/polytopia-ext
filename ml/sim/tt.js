@@ -1,6 +1,7 @@
 // Loads the game's rules engine and bot into Node for the ML tools, and adds:
-//  - a ruleset: POLY_RULES=polytopia (default; The Battle of Polytopia, see rulesets/polytopia.js) or tessera (the
-//    browser game in src/ as is). One process runs one ruleset, so pick it before the first require.
+//  - a ruleset: POLY_RULES=polytopia (default; classic Battle of Polytopia, see rulesets/polytopia.js), polytopia_live
+//    (the live game, 2.17.3, see rulesets/POLYTOPIA_LIVE.md) or tessera (the browser game in src/ as is). One process
+//    runs one ruleset, so pick it before the first require.
 //  - a seedable Math.random (the bot's only source of nondeterminism; the engine uses its own seeded st.rng)
 //  - per-game action listeners that see every top-level action just before and just after it runs
 'use strict';

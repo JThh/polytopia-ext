@@ -22,8 +22,10 @@ with the outcome each trajectory actually reached, and at play time the model is
 score. The rules are never written into the prompt: the model learns them from data, and from the game rejecting
 illegal actions during RL.
 
-The simulator follows **The Battle of Polytopia** rules (`sim/rulesets/polytopia.js`), not the browser game's
-variant, and the model talks to any game through a JSON bridge. The same prompts and actions work with a real
+The simulator follows **The Battle of Polytopia** rules, not the browser game's variant: the classic game by default
+(`sim/rulesets/polytopia.js`), or the live game as of 2.17.3 with `POLY_RULES=polytopia_live`
+(`sim/rulesets/polytopia_live.js`, see [its rules table](sim/rulesets/POLYTOPIA_LIVE.md)). The model talks to any
+game through a JSON bridge. The same prompts and actions work with a real
 Polytopia client: see [bridge/README.md](bridge/README.md).
 
 > Status: everything here runs and is tested end to end on CPU with a tiny random-weight Qwen3.5-architecture
@@ -165,8 +167,20 @@ Combat (attack and defence force, × 4.5 damage), movement, zones of control, ci
 already Polytopia's. Unchanged from the engine, they apply under both rulesets. `ml/test/rules.js` checks
 setup, ruins, adjacency, invariants over 30 bot games, and that bots actually use the Polytopia economy.
 Approximations and version notes are in the ruleset file (marked "verify") and in
-[bridge/README.md](bridge/README.md#matching-the-version-you-play). The live game has added content since the classic
-version: update the tables there and regenerate the data to match the patch you play.
+[bridge/README.md](bridge/README.md#matching-the-version-you-play).
+
+### The live game: `POLY_RULES=polytopia_live`
+
+`sim/rulesets/polytopia_live.js` is the live game as of 2.17.3 for the 12 regular tribes. It adds the current tech
+tree (Strategy, Ramming, Diplomacy, backwards research), rafts with Scout / Rammer / Bomber upgrades, Cloaks and
+Daggers, embassies, markets, bridges, starfish, monuments and their tasks, lighthouses, city connections, idle
+healing, Stiff / Surprise / Static, per-tribe starting stars and map biases, and the live score and bot bonuses.
+Every number comes from the game's own rules data (`GameLogicData` 28) or a decompile-based re-implementation;
+[POLYTOPIA_LIVE.md](sim/rulesets/POLYTOPIA_LIVE.md) lists each rule with its source, and the few assumptions.
+`scripts/check_gamedata.js` re-checks the tables against a data file, and `test/rules_live.js` checks each rule as a
+scenario. The rules it needs from the engine are default-off hooks (`TT.HOOKS` in `src/engine.js`), so seeded games
+and prompts under the classic and Tessera rules are byte-identical to before. Select it in any config with
+`rules: polytopia_live`, and generate its data with `POLY_RULES=polytopia_live node ml/sim/gen_sft.js ...`.
 
 ## Stage 0: the SFT dataset
 
@@ -251,6 +265,30 @@ Cost, roughly, on one A100 with HF generation: 2 trunks × 6 samples × 20–40 
 minutes per iteration. vLLM roughly halves that. 300 iterations is about 1–2 days. Shorter games early in the
 curriculum make the first stages much cheaper.
 
+### Long-term recipe: a learned value for the turn reward
+
+`rl.yaml` rewards immediate score gains, and on its own that taught play worse than SFT's. `rl_longterm_v4.yaml`
+rewards the change in a learned value V(state) ≈ the expected final game reward instead:
+
+1. `node ml/sim/gen_value.js --games 10000 --workers 6 --out runs/value/data` plays bot games drawn from the RL
+   curriculum and the eval setup, records every seat's turn-start state as numbers (`sim/features.js`: game, score
+   parts, economy, army and rivals, about 40 features of the full state), and how that seat's game ended. Some seats pass whole turns or play as the easy bot, so V also
+   sees where weak play leads.
+2. `python ml/scripts/fit_value.py --data runs/value/data --out runs/value/value.npz --hidden 256 --epochs 15` fits
+   an MLP to the final game reward (3 × win + 1.5 × rank + 1 × alive + 0.5 × score / 3000), split by game. It prints
+   R² and win AUC on held-out games, by quarter of the game.
+3. The turn reward becomes 4 × ΔV over the turn + 0.4 × the immediate terms + rule penalties (`value_model`,
+   `w_value`, `w_progress`). The game reward is win-first (`w_win 3`, `w_rank 1.5`, `w_survive 1`), with 6 trunks
+   of each game, a group on a quarter of the turns, and horizon 1. Longer horizons let the bot play the model's later
+   turns and reward passive plans.
+
+On the 48-game eval this model won 43.8% of games, against 16.7% for SFT and 27.1% for the hard bot playing the
+same seat, with a paired score ratio of 1.09 against that bot. Against crazy bots only it won 29.2%, against 12.5%
+for the crazy bot in its seat (ratio 1.13).
+
+`sft_live_v5.yaml` and `rl_live_v5.yaml` carry that model over to the live rules: a short SFT continuation on bot
+games under `polytopia_live`, a value model refit on those rules, then the same recipe.
+
 ## Evaluation
 
 `python -m polyrl.evaluate --config ml/configs/eval.yaml` plays N games with the model in one seat and bots in the
@@ -271,22 +309,25 @@ through PolyCommands has every command accepted.
 | Path | |
 | --- | --- |
 | `sim/tt.js` | loads engine + bot, picks the ruleset (`POLY_RULES`), seedable bot randomness, action listeners |
-| `sim/rulesets/polytopia.js` | Polytopia rules: tribes, techs, units, buildings, ruins, score |
+| `sim/rulesets/polytopia.js` | classic Polytopia rules: tribes, techs, units, buildings, ruins, score |
+| `sim/rulesets/polytopia_live.js` | the live game (2.17.3); rules and sources in `POLYTOPIA_LIVE.md` |
 | `sim/actions.js` | action space: tuple ↔ engine call ↔ PolyCommand, strict parser |
 | `sim/observe.js` | snapshot (state → PolyState) and render (PolyState → prompt) |
 | `sim/history.js` | action log with per-player visibility |
 | `sim/session.js` | a game with model and bot seats; plan execution; branch evaluation |
 | `sim/server.js` | JSON-lines RPC for Python |
 | `sim/gen_sft.js`, `configs.js`, `targets.js` | dataset generator, game setups, goal targets |
-| `polyrl/` | `sft.py`, `rl.py`, `evaluate.py`, `bridge.py`, `modeling.py`, `generation.py`, `rewards.py`, `formatting.py`, `sim.py`, `config.py` |
-| `configs/` | A100 recipes: `sft.yaml`, `sft_gemma4.yaml`, `rl.yaml`, `eval.yaml` |
-| `scripts/` | `pipeline.sh`, `make_tiny_model.py` (tiny random model for CPU tests) |
+| `sim/features.js`, `gen_value.js` | state features and bot-game data for the value model |
+| `sim/replay.js` | per-action replay frames (server ops `record` / `frames`) |
+| `polyrl/` | `sft.py`, `rl.py`, `evaluate.py`, `bridge.py`, `modeling.py`, `generation.py`, `rewards.py`, `value.py`, `formatting.py`, `sim.py`, `config.py` |
+| `configs/` | A100 recipes: `sft.yaml`, `sft_gemma4.yaml`, `rl.yaml`, `rl_longterm_v4.yaml`, `eval.yaml`, `eval_crazy.yaml` (crazy bots only); live rules: `sft_live_v5.yaml`, `rl_live_v5.yaml` |
+| `scripts/` | `pipeline.sh`, `make_tiny_model.py` (tiny random model for CPU tests), `fit_value.py`, `record_replay.py` (model vs bots, frame by frame), `check_gamedata.js` |
 | `test/` (Node), `tests/` (pytest) | see below |
 
 ## Tests
 
 ```bash
-npm run test:ml                         # codec round trip (both rulesets), Polytopia rules + invariants, server protocol
+npm run test:ml                         # codec round trip (all rulesets), classic and live rules + invariants, server protocol
 cd ml && python -m pytest               # simulator client, rewards, parsing, bridge, and the CPU training smoke test
 ```
 
@@ -297,8 +338,9 @@ merge → an RL iteration → evaluation. It checks plumbing, not playing streng
 
 - The teacher is the game's built-in bot. It plays a solid game, but SFT can only get the model to its level; beating
   it is RL's job. The paired evaluation measures exactly that.
-- The ruleset is the classic game. Newer content (special tribes, the naval rework, Cloaks and Diplomacy) needs
-  table updates and new data before the model knows it.
+- The default ruleset is the classic game. `polytopia_live` covers 2.17.3 for the regular tribes; the four special
+  tribes, peace treaties and the AI's opinion system are not simulated. A game update needs a rerun of
+  `scripts/check_gamedata.js` against its data, and new data before the model knows the change.
 - The model plans a whole turn up front. Ruins and other random outcomes are not known until afterwards; actions
   that become illegal are skipped, and the next turn sees the result.
 - Coordinates and ids in PolyState must match the game's. Building that mapping into a game mod is the

@@ -10,10 +10,10 @@
 // Prompt layout (the model's answer follows the final "actions:" line):
 //   goal       decision-transformer conditioning: the final rank and score this trajectory reaches
 //   game       ruleset, turn, mode, map, players
-//   me         stars, income, (power), score, rank, kills; score_parts; techs
+//   me         stars, income, (power), score, rank, kills, (embassies); score_parts; techs; (monuments ready)
 //   rivals     public scoreboard
 //   board      one line per row, run-length encoded: "x0-x1" + terrain letter + owner digit
-//   features   resources, improvements, roads, ruins, (storm)
+//   features   resources, improvements, roads, ruins, (bridges), (storm)
 //   cities     mine in detail, other known cities briefly
 //   units      mine in detail, visible enemies
 //   history    my last turns' actions, rivals' actions I saw since then
@@ -24,6 +24,7 @@ const A = require('./actions');
 const HEADER = '<polytopia v1>';
 const TERRAIN = ['ocean', 'shallow', 'field', 'forest', 'mountain'];          // engine terrain index -> PolyState name
 const LETTER = { ocean: 'w', shallow: 's', field: 'p', forest: 'f', mountain: 'm' }; // PolyState name -> board letter
+const LIVE = !!TT.monumentsAvailable; // Polytopia live rules: bridges, embassies, monuments, city connections
 
 function scoreRank(st, pid) {
   const me = TT.score(st, pid);
@@ -48,14 +49,16 @@ function snapshot(st, pid, hist, opts) {
     const row = [];
     for (let x = 0; x < W; x++) {
       const i = y * W + x, tl = st.tiles[i];
-      row.push(P.explored[i] ? { terrain: TERRAIN[tl.t], owner: tl.owner, resource: tl.res && !tl.imp ? tl.res : null, improvement: tl.imp || null, road: !!(tl.road && tl.site < 0), ruin: !!tl.ruin } : null);
+      const o = P.explored[i] ? { terrain: TERRAIN[tl.t], owner: tl.owner, resource: tl.res && !tl.imp ? tl.res : null, improvement: tl.imp || null, road: !!(tl.road && tl.site < 0), ruin: !!tl.ruin } : null;
+      if (o && LIVE && tl.bridge) o.bridge = true;
+      row.push(o);
     }
     tiles.push(row);
   }
   const cities = [];
   for (const c of st.cities) {
     if (c.owner === pid) cities.push({ id: c.id, x: c.x, y: c.y, owner: pid, capital: !!c.capital, level: c.level, pop: c.pop, units: TT.cityUnits(st, c), unit_cap: TT.cityCap(c),
-      radius: c.radius, walls: !!c.walls, workshop: c.workshop, parks: c.parks, trade: c.prod || 0, pending: c.pending.slice() });
+      radius: c.radius, walls: !!c.walls, workshop: c.workshop, parks: c.parks, trade: c.prod || 0, pending: c.pending.slice(), ...(LIVE ? { linked: !!c.linked } : {}) });
     else if (P.explored[c.y * W + c.x]) cities.push({ id: c.id, x: c.x, y: c.y, owner: c.owner, capital: !!c.capital, level: c.level, walls: !!c.walls });
   }
   const units = [];
@@ -67,12 +70,14 @@ function snapshot(st, pid, hist, opts) {
   }
   const nTurns = opts.histTurns == null ? 2 : opts.histTurns;
   const history = hist && nTurns > 0 ? hist.turnsSeenBy(pid, Math.max(1, st.turn - nTurns)).filter(g => g.pid === pid ? g.turn < st.turn : g.actions.length) : null;
+  const me = { id: pid, tribe: TT.tribe(P.tribe).name, stars: P.stars, income: TT.income(st, pid), power: TT.RULESET.hasPower ? P.power : null, power_cost: TT.RULESET.hasPower ? TT.POWER_COST : null,
+    score: sr.score, rank: sr.rank, alive_players: sr.of, kills: P.kills, losses: P.losses, embassy: !!P.embassy,
+    techs: Object.keys(P.techs).sort((a, c) => TT.TECH_ORDER.indexOf(a) - TT.TECH_ORDER.indexOf(c)), score_parts: parts };
+  if (LIVE) Object.assign(me, { embassies: P.live.embassies.slice(), monuments: TT.monumentsAvailable(st, pid) });
   return {
     version: 1, rules: TT.RULESET.name, turn: st.turn, turn_limit: S.mode === 'score' ? S.turnLimit : null, mode: S.mode, map_type: S.mapType,
     width: W, height: st.H, players: st.players.length, events: !!S.events,
-    me: { id: pid, tribe: TT.tribe(P.tribe).name, stars: P.stars, income: TT.income(st, pid), power: TT.RULESET.hasPower ? P.power : null, power_cost: TT.RULESET.hasPower ? TT.POWER_COST : null,
-      score: sr.score, rank: sr.rank, alive_players: sr.of, kills: P.kills, losses: P.losses, embassy: !!P.embassy,
-      techs: Object.keys(P.techs).sort((a, c) => TT.TECH_ORDER.indexOf(a) - TT.TECH_ORDER.indexOf(c)), score_parts: parts },
+    me,
     rivals: st.players.filter(Q => Q.id !== pid).map(Q => ({ id: Q.id, tribe: known(st, pid, Q.id) ? TT.tribe(Q.tribe).name : null, alive: Q.alive, score: Q.alive ? TT.score(st, Q.id) : 0 })),
     tiles, cities, units,
     storm: st.storm && P.explored[st.storm.y * W + st.storm.x] ? { x: st.storm.x, y: st.storm.y, dx: st.storm.dx, dy: st.storm.dy, turns_left: st.storm.life } : null,
@@ -102,7 +107,7 @@ function boardLines(s) {
 }
 
 function featureLines(s) {
-  const res = {}, imp = {}, roads = [], ruins = [];
+  const res = {}, imp = {}, roads = [], ruins = [], bridges = [];
   for (let y = 0; y < s.height; y++) for (let x = 0; x < s.width; x++) {
     const t = s.tiles[y][x];
     if (!t) continue;
@@ -110,11 +115,13 @@ function featureLines(s) {
     if (t.improvement) (imp[t.improvement] || (imp[t.improvement] = [])).push(xy(x, y));
     if (t.road) roads.push(xy(x, y));
     if (t.ruin) ruins.push(xy(x, y));
+    if (t.bridge) bridges.push(xy(x, y));
   }
   const group = o => Object.keys(o).map(k => k + ' ' + o[k].join(' ')).join(' | ') || 'none';
   const out = ['resources: ' + group(res), 'improvements: ' + group(imp)];
   if (roads.length) out.push('roads: ' + roads.join(' '));
   if (ruins.length) out.push('ruins: ' + ruins.join(' '));
+  if (bridges.length) out.push('bridges: ' + bridges.join(' '));
   if (s.storm) out.push('storm: ' + xy(s.storm.x, s.storm.y) + ' heading ' + xy(s.storm.dx, s.storm.dy) + ' turns_left=' + s.storm.turns_left);
   return out;
 }
@@ -129,6 +136,7 @@ function cityLines(s) {
       if (c.workshop) t += ' workshop=' + c.workshop;
       if (c.parks) t += ' parks=' + c.parks;
       if (c.trade) t += ' trade=' + c.trade;
+      if (c.linked) t += ' linked';
       if (c.pending && c.pending.length) t += ' reward_pending=' + c.pending.join(',');
       mine.push(' ' + t);
     } else other.push(' ' + A.cityRef(c.id) + ' ' + xy(c.x, c.y) + (c.owner < 0 ? ' village' : ' P' + c.owner + (c.capital ? ' capital' : '') + ' level=' + c.level + (c.walls ? ' walls' : '')));
@@ -177,7 +185,9 @@ function render(s, opts) {
   lines.push('game: rules=' + s.rules + ' turn=' + s.turn + (s.turn_limit ? ' of ' + s.turn_limit : '') + ' mode=' + s.mode + ' map=' + s.map_type + ' size=' + s.width + 'x' + s.height +
     ' players=' + s.players + ' events=' + (s.events ? 'on' : 'off'));
   lines.push('me: P' + me.id + ' tribe=' + me.tribe + ' stars=' + me.stars + ' income=' + me.income + (me.power != null ? ' power=' + me.power + '/' + me.power_cost : '') +
-    ' score=' + me.score + ' rank=' + me.rank + '/' + me.alive_players + ' kills=' + me.kills + ' losses=' + me.losses + (me.embassy ? ' embassy' : ''));
+    ' score=' + me.score + ' rank=' + me.rank + '/' + me.alive_players + ' kills=' + me.kills + ' losses=' + me.losses + (me.embassy ? ' embassy' : '') +
+    (me.embassies && me.embassies.length ? ' embassies=' + me.embassies.map(q => 'P' + q).join(',') : ''));
+  if (me.monuments && me.monuments.length) lines.push('monuments_ready: ' + me.monuments.join(' '));
   lines.push('score_parts: ' + Object.keys(me.score_parts).map(k => k + '=' + me.score_parts[k]).join(' '));
   lines.push('techs: ' + (me.techs.join(' ') || 'none'));
   lines.push('rivals: ' + s.rivals.map(r => 'P' + r.id + ' ' + (r.tribe || '?') + (r.alive ? ' score=' + r.score : ' fallen')).join(' | '));

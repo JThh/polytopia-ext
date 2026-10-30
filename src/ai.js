@@ -625,7 +625,8 @@ for (const k of TT.UNIT_ORDER) {
 AI.ROLE = ROLE;
 
 // Optional rule-variant hooks (TT.AIHOOKS), unset in the game itself: techValue(st, pid, k, ctx) -> number|null,
-// buildPop(st, pid, x, y, k) -> population a build would add, skipBuild { key: true }, noWalls (walls not for sale).
+// buildPop(st, pid, x, y, k) -> population a build would add, skipBuild { key: true }, noWalls (walls not for sale),
+// embassyTarget(st, pid) -> id of a rival capital to open an embassy in, or null.
 function techValue(st, pid, k, ctx) {
   const H = TT.AIHOOKS;
   if (H && H.techValue) { const hv = H.techValue(st, pid, k, ctx); if (hv != null) return hv; }
@@ -682,7 +683,7 @@ function econCandidates(st, pid, ctx, D, jitter) {
     const x = i % W, y = (i / W) | 0;
     for (const k of TT.buildOptions(st, pid, x, y)) {
       const B = TT.BUILD[k];
-      if (!P.techs[B.tech] || k === 'clear' || k === 'road' || k === 'grow' || (H && H.skipBuild && H.skipBuild[k])) continue;
+      if ((B.tech && !P.techs[B.tech]) || k === 'clear' || k === 'road' || k === 'grow' || (H && H.skipBuild && H.skipBuild[k])) continue;
       if (k === 'market') { const gain = TT.marketYield(st, i); out.push({ kind: 'build', key: k, cost: B.cost, pri: gain * 3.2 / B.cost * jitter(), exec: () => TT.build(st, x, y, k) }); continue; }
       const c = st.cities[tl.city];
       const need = c.level + 1 - c.pop, pop = H && H.buildPop ? H.buildPop(st, pid, x, y, k) : B.pop;
@@ -732,7 +733,10 @@ function econCandidates(st, pid, ctx, D, jitter) {
     }
     if (bestU) out.push(bestU);
   }
-  if (P.techs.diplomacy && !P.embassy) {
+  if (P.techs.diplomacy && TT.AIHOOKS && TT.AIHOOKS.embassyTarget) { // embassies in rival capitals (Polytopia live rules)
+    const cid = TT.AIHOOKS.embassyTarget(st, pid), cost = TT.embassyCost(st, pid);
+    if (cid != null) out.push({ kind: 'embassy', cost, pri: 2 * 1.6 / cost, exec: () => TT.buildEmbassy(st, cid) });
+  } else if (P.techs.diplomacy && !P.embassy) {
     const cap = ctx.myCities.find(c => c.capital), met = TT.metRivals(st, pid).length;
     if (cap && met) out.push({ kind: 'embassy', cost: 5, pri: met * 1.6 / 5, exec: () => TT.buildEmbassy(st, cap.id) });
   }

@@ -1,0 +1,62 @@
+{
+ "games": 1200,
+ "seatTurns": 130287,
+ "skippedLong": 6,
+ "samples": {
+  "train": 16479,
+  "val": 328
+ },
+ "verbs": {
+  "move": 83359,
+  "train": 12004,
+  "build": 28466,
+  "end_turn": 16807,
+  "capture": 1908,
+  "reward": 9545,
+  "research": 8730,
+  "attack": 11639,
+  "embassy": 2601,
+  "convert": 201,
+  "recover": 1262,
+  "examine": 515,
+  "heal": 131,
+  "upgrade": 1201,
+  "infiltrate": 4
+ },
+ "byDifficulty": {
+  "hard": 9193,
+  "normal": 2442,
+  "crazy": 4904,
+  "easy": 268
+ },
+ "byRank": {
+  "1": 9150,
+  "2": 4340,
+  "3": 2180,
+  "4": 813,
+  "5": 281,
+  "6": 43
+ },
+ "bySize": {
+  "normal": 6498,
+  "tiny": 1848,
+  "large": 3097,
+  "small": 4330,
+  "huge": 1034
+ },
+ "byPlayers": {
+  "2": 2750,
+  "3": 4750,
+  "4": 4776,
+  "5": 3247,
+  "6": 1284
+ },
+ "byMode": {
+  "score": 12070,
+  "domination": 4737
+ },
+ "maxPromptChars": 13985,
+ "avgPromptChars": 3704,
+ "avgCompletionChars": 357,
+ "avgActions": 10.6
+}

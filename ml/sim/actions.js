@@ -20,7 +20,7 @@ const TT = require('./tt');
 
 const VOCAB = {
   unit: TT.UNIT_ORDER.slice(),
-  naval: ['ship', 'battleship'],
+  naval: (TT.RULESET.navalUpgrades || ['ship', 'battleship']).slice(),
   reward: Object.keys(TT.REWARDS),
   build: Object.keys(TT.BUILD),
   tech: TT.TECH_ORDER.slice(),
@@ -47,7 +47,10 @@ const VERBS = {
   power:      { actor: 'tribe', args: [],               engine: 'usePower',     desc: 'Unleash the tribe power.' },
   end_turn:   { actor: 'tribe', args: [],               engine: 'endTurn',      desc: 'End the turn. Always the last tuple.' },
 };
-// verbs the active ruleset allows (Polytopia has no tribe powers, walls for sale, embassies or cloaks)
+// Polytopia live rules: embassies go in a rival's capital, named by its position; rafts upgrade to scout/rammer/bomber
+if (TT.RULESET.embassyAtPos) VERBS.embassy = { actor: 'tribe', args: ['pos'], engine: 'buildEmbassy', desc: 'Open an embassy in the rival capital at pos (Diplomacy).' };
+for (const v of Object.keys(TT.RULESET.verbDesc || {})) if (VERBS[v]) VERBS[v] = Object.assign({}, VERBS[v], { desc: TT.RULESET.verbDesc[v] });
+// verbs the active ruleset allows (classic Polytopia has no tribe powers, walls for sale, embassies or cloaks)
 const ENABLED = new Set(TT.RULESET.verbs || Object.keys(VERBS).filter(v => v !== 'examine'));
 for (const v of Object.keys(VERBS)) if (!ENABLED.has(v)) delete VERBS[v];
 const END = ['tribe', 'end_turn'];
@@ -73,7 +76,7 @@ function fromCommand(st, name, a) {
     case 'train': return [cityRef(a[0]), 'train', a[1]];
     case 'chooseReward': return [cityRef(a[0]), 'reward', a[1]];
     case 'buildWalls': return [cityRef(a[0]), 'walls'];
-    case 'buildEmbassy': return [cityRef(a[0]), 'embassy'];
+    case 'buildEmbassy': return VERBS.embassy && VERBS.embassy.actor === 'tribe' ? ['tribe', 'embassy', [st.cities[a[0]].x, st.cities[a[0]].y]] : [cityRef(a[0]), 'embassy'];
     case 'build': return ['tribe', 'build', a[2], [a[0], a[1]]];
     case 'research': return ['tribe', 'research', a[0]];
     case 'usePower': return ['tribe', 'power'];
@@ -217,7 +220,13 @@ function execute(st, pid, t) {
     case 'train': evs = TT.train(st, c.id, t[2]); break;
     case 'reward': evs = TT.chooseReward(st, c.id, t[2]); break;
     case 'walls': evs = TT.buildWalls(st, c.id); break;
-    case 'embassy': evs = TT.buildEmbassy(st, c.id); break;
+    case 'embassy': {
+      if (V.actor === 'city') { evs = TT.buildEmbassy(st, c.id); break; }
+      if (!inB(t[2])) return fail('off_board');
+      const site = st.tiles[t[2][1] * st.W + t[2][0]].site;
+      if (site < 0) return fail('no_city');
+      evs = TT.buildEmbassy(st, site); break;
+    }
     case 'build': if (!inB(t[3])) return fail('off_board'); evs = TT.build(st, t[3][0], t[3][1], t[2]); break;
     case 'research': evs = TT.research(st, t[2]); break;
     case 'power': evs = TT.usePower(st); break;
@@ -230,7 +239,8 @@ function execute(st, pid, t) {
 //   {type:'move', unit, unit_type, to:[x,y]}   {type:'attack'|'convert', unit, unit_type, target:[x,y]}
 //   {type:'capture'|'examine'|'recover'|'heal_others'|'disband'|'infiltrate', unit, unit_type}
 //   {type:'upgrade', unit, unit_type, to:'ship'|'battleship'}   {type:'train', city, unit_type}
-//   {type:'city_reward', city, reward}   {type:'walls'|'embassy', city}   {type:'build', at:[x,y], building}
+//   {type:'city_reward', city, reward}   {type:'walls'|'embassy', city}   {type:'embassy', at:[x,y]} (live rules)
+//   {type:'build', at:[x,y], building}
 //   {type:'research', tech}   {type:'power'}   {type:'end_turn'}
 const CMD_TYPE = { heal: 'heal_others', reward: 'city_reward' };
 const VERB_OF = { heal_others: 'heal', city_reward: 'reward' };
@@ -255,6 +265,7 @@ function toCommand(t) {
     case 'reward': c.reward = t[2]; break;
     case 'build': c.building = t[2]; c.at = t[3]; break;
     case 'research': c.tech = t[2]; break;
+    case 'embassy': if (V.actor === 'tribe') c.at = t[2]; break;
   }
   return c;
 }
@@ -269,6 +280,7 @@ function fromPolyCommand(c) {
     case 'reward': return [actor, verb, c.reward];
     case 'build': return [actor, verb, c.building, c.at];
     case 'research': return [actor, verb, c.tech];
+    case 'embassy': if (V.actor === 'tribe') return [actor, verb, c.at]; break;
   }
   return [actor, verb];
 }

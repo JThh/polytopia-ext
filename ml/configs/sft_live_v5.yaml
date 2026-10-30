@@ -1,0 +1,31 @@
+# Short SFT continuation onto the Polytopia live rules (rulesets/polytopia_live.js), starting from RL v4's final model.
+# Bot games under the new rules teach the new verbs, vessels, buildings and score scale; the low learning rate and a
+# third of the original data keep most of what RL v4 learned. Then RL v5 (rl_live_v5.yaml) starts from the result.
+#   PYTHONPATH=ml python -m polyrl.sft --config ml/configs/sft_live_v5.yaml
+model:
+  name: runs/rl-v4-longterm/merged
+  dtype: bfloat16
+  attn_implementation: flash_attention_2
+  gradient_checkpointing: true
+  max_length: 6144
+lora:
+  r: 64
+  alpha: 128
+  dropout: 0.05
+data:
+  train_file: ml/data/sft_live/train.jsonl
+  val_file: ml/data/sft_live/val.jsonl
+  max_val_samples: 400
+  gen_eval_samples: 16
+  chat_template: false
+train:
+  lr: 5.0e-5                       # a quarter of stage 1's: adapt to the new rules, do not overwrite the RL policy
+  epochs: 1
+  max_tokens_per_batch: 16384
+  grad_accum: 4
+  warmup_ratio: 0.05
+  log_every: 10
+  eval_every: 100
+  save_every: 200
+output_dir: runs/sft-live-v5
+merge_at_end: true
