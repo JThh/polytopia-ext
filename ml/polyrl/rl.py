@@ -112,7 +112,7 @@ def rollout(it: int, cfg: RLConfig, stage: Stage, pool: SimPool, gen, tok, chat:
     items: list[Item] = []
     chosen_by_trunk: list[list[Item]] = [[] for _ in games]
     st = {"turns": 0, "samples": 0, "parsed": 0, "complete": 0, "ended": 0, "valid": 0, "invalid": 0, "bot_turns": 0, "reward": [], "progress": [],
-          "rules": [], "d_score": [], "comp_len": [], "teacher_wins": 0, "groups": 0}
+          "rules": [], "d_score": [], "d_value": [], "comp_len": [], "teacher_wins": 0, "groups": 0}
     examples = []
     turn_no = 0
     while True:
@@ -178,6 +178,7 @@ def rollout(it: int, cfg: RLConfig, stage: Stage, pool: SimPool, gen, tok, chat:
                 st["progress"].append(rw[k][1]["progress"])
                 st["rules"].append(rw[k][1]["rules"])
                 st["d_score"].append(rw[k][1]["d_score"])
+                st["d_value"].append(rw[k][1].get("d_value", 0.0))
                 st["comp_len"].append(len(s.ids))
             st["turns"] += 1
             if e == 0 and len(examples) < 3 and turn_no % 5 == 1:
@@ -201,10 +202,11 @@ def rollout(it: int, cfg: RLConfig, stage: Stage, pool: SimPool, gen, tok, chat:
         "model_turns": st["turns"], "bot_turns": st["bot_turns"], "samples": st["samples"],
         "parse_rate": st["parsed"] / n, "complete_rate": st["complete"] / n, "end_turn_rate": st["ended"] / n,
         "valid_action_rate": st["valid"] / max(1, st["valid"] + st["invalid"]), "invalid_per_sample": st["invalid"] / n,
-        "turn_reward": mean(st["reward"]), "progress": mean(st["progress"]), "rules_penalty": mean(st["rules"]), "d_score": mean(st["d_score"]),
+        "turn_reward": mean(st["reward"]), "progress": mean(st["progress"]), "rules_penalty": mean(st["rules"]), "d_score": mean(st["d_score"]), "d_value": mean(st["d_value"]),
         "completion_tokens": mean(st["comp_len"]), "teacher_best_rate": st["teacher_wins"] / max(1, st["groups"]) if cfg.teacher_in_group else None,
         "final_score": mean([r["scores"][seat] for r in results]), "win_rate": mean([r["ranks"][seat] == 1 for r in results]),
-        "final_rank": mean([r["ranks"][seat] for r in results]), "game_turns": mean([r["turn"] for r in results]), "final_reward": mean(finals),
+        "final_rank": mean([r["ranks"][seat] for r in results]), "survival_rate": mean([bool(r["alive"][seat]) for r in results]),
+        "game_turns": mean([r["turn"] for r in results]), "final_reward": mean(finals),
     }
     return items, stats, examples
 

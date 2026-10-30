@@ -11,6 +11,7 @@
 //                                         score each plan on its own copy of the game -> {results:[...]}
 //   {"op":"step", "gid", "plan":text}     play the plan for real, then advance -> {report, status}
 //   {"op":"result", "gid"}  {"op":"close", "gid"}  {"op":"spec"}  {"op":"ping"}
+//   {"op":"record", "gid", "viewer":0} / {"op":"frames", "gid"}  per-action replay frames (replay.js) -> {frames}
 // Real-game bridge (see ml/bridge/README.md):
 //   {"op":"render", "state":PolyState, "goal":{rank,score}}  -> {prompt}
 //   {"op":"compile", "text"}              model output -> {actions:[tuple], commands:[PolyCommand], complete, error}
@@ -23,6 +24,7 @@ const configs = require('./configs');
 const targets = require('./targets');
 const { Session } = require('./session');
 const { render, snapshot } = require('./observe');
+const { Recorder } = require('./replay');
 
 const games = new Map();
 let nextId = 1;
@@ -46,6 +48,9 @@ const ops = {
     return { gid, settings: s.st.settings, difficulties: s.st.players.map(P => P.difficulty), tribes: s.st.players.map(P => P.tribe), model_seats: seats, status: s.advance() };
   },
   advance: m => ({ status: get(m.gid).advance() }),
+  // replay viewer: start recording per-action frames (viewer = whose fog to track), then collect them
+  record(m) { const s = get(m.gid); s.recorder = new Recorder(s, m.viewer == null ? 0 : m.viewer); return { frames: s.recorder.take() }; },
+  frames(m) { const s = get(m.gid); return { frames: s.recorder ? s.recorder.take() : [] }; },
   observe(m) {
     const s = get(m.gid), pid = s.st.current;
     const goal = m.goal || s.goalFor(pid, m.boost);

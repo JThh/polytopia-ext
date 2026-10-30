@@ -1,0 +1,17 @@
+# Model vs crazy bots only (the strongest built-in difficulty), paired with the crazy bot playing the same seat in the
+# same games. Same map sizes, player counts, mode and turn limit as eval.yaml; only the opponents' difficulty differs.
+#   PYTHONPATH=ml python -m polyrl.evaluate --config ml/configs/eval_crazy.yaml model.name=... [adapter=...] out=...
+model:
+  name: runs/rl-qwen3.5-4b/merged
+  gradient_checkpointing: false
+gen:
+  max_new_tokens: 768
+rules: polytopia
+targets: ml/data/sft/targets.json
+games: 48
+seed: 10000
+greedy: true
+baseline: crazy
+sample: {sizes: {small: 1, normal: 2, large: 1}, players: [2, 5], difficulties: {crazy: 1}, modes: {score: 1}, turnLimits: [30]}
+max_turns: 40
+out: runs/eval-crazy.json

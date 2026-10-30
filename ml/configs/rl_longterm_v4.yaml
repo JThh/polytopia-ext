@@ -1,0 +1,69 @@
+# RL v4: long-term winning instead of short-term points.
+# The turn signal is mostly the change in a learned value V(state) ~ expected final game reward (ml/scripts/fit_value.py
+# on 13,000 bot games with deliberately passive and weak turns mixed in; held-out win AUC 0.90), plus a little of the
+# immediate progress terms to break near-ties. The game reward is win-first and V is trained on the same reward, so
+# both signals push toward winning; the whole-game comparison (6 copies, weight 2) is the main signal.
+# Probe on 226 bot-game states, horizon 1: an empty plan scores >= the hard bot's plan in 13% of states with this turn
+# signal (v3: 9%, V alone: 23%, playing each plan out to the end with bots: 53%, v2's horizon 2: 47%).
+#   PYTHONPATH=ml python -m polyrl.rl --config ml/configs/rl_longterm_v4.yaml
+model:
+  name: runs/sft-qwen3.5-4b/merged
+  dtype: bfloat16
+  gradient_checkpointing: true
+  max_length: 7168
+lora:                      # a fresh adapter on top of the SFT weights; switching it off gives the KL reference
+  r: 32
+  alpha: 64
+  dropout: 0.0
+gen:
+  backend: hf              # or vllm (pip install vllm): several times faster rollouts, same results format
+  max_new_tokens: 768
+  temperature: 1.0
+reward:
+  score_scale: 300
+  w_score: 1.0
+  w_rel: 0.5
+  w_income: 0.1
+  w_city: 0.5
+  w_invalid: 0.05         # was 0.15: within a group it decided rankings when score gains were similar
+  w_parse: 1.5
+  w_death: 3.0
+  final_scale: 3000
+  w_final_score: 0.5      # game reward: win first, then rank, survival, score
+  w_survive: 1.0
+  w_win: 3.0
+  w_rank: 1.5
+  value_model: runs/value/value_for_rl_v4.npz   # trained on this same game reward
+  w_value: 4.0            # per unit change in predicted final reward over the turn
+  w_progress: 0.4         # immediate score / lead / income / city terms, kept small (0.1 of the value term)
+rules: polytopia
+targets: ml/data/sft/targets.json
+output_dir: runs/rl-v4-longterm
+iterations: 300
+trunks: 6                  # copies of the same game per iteration: the whole-game comparison is the main signal
+branch_prob: 0.25          # a quarter of the turns sample a group: generation per iteration stays at v3's
+group_size: 6              # action lists sampled per model turn (turn-level GRPO group)
+horizon: 1                 # longer horizons let the bot play our turns and reward passive plans (v2)
+trunk_greedy: true
+trunk_epsilon: 0.15
+episode_weight: 2.0        # the game outcome counts twice as much as a turn comparison
+lr: 1.0e-5
+kl_coef: 0.02
+clip_low: 0.2
+clip_high: 0.28
+ppo_epochs: 1
+minibatches: 2
+max_tokens_per_batch: 12288
+max_prompt_tokens: 5120
+sim_procs: 4
+save_every: 10
+eval_every: 25
+eval_games: 8
+curriculum:
+  - until: 40              # small maps, weak bots, short games: learn to act legally and grow
+    sample: {sizes: {tiny: 1, small: 1}, players: [2, 3], difficulties: {easy: 1, normal: 1}, modes: {score: 1}, turnLimits: [15, 20]}
+  - until: 120
+    sample: {sizes: {small: 1, normal: 1}, players: [2, 4], difficulties: {normal: 1, hard: 1}, modes: {score: 1}, turnLimits: [20, 25, 30]}
+  - until: null            # full games against hard and crazy bots
+    sample: {sizes: {small: 1, normal: 2, large: 1}, players: [2, 6], difficulties: {hard: 2, crazy: 1}, modes: {score: 4, domination: 1}, turnLimits: [25, 30, 35]}
+    max_turns: 40

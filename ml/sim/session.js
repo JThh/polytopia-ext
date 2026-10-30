@@ -6,6 +6,7 @@ const A = require('./actions');
 const { History } = require('./history');
 const { observe, scoreRank } = require('./observe');
 const targets = require('./targets');
+const { features } = require('./features');
 
 const MAX_ACTIONS = 150; // per turn; anything longer is cut off
 
@@ -80,7 +81,7 @@ class Session {
     for (const Q of st.players) if (Q.id !== pid && Q.alive) maxOther = Math.max(maxOther, TT.score(st, Q.id));
     return { score: P.alive ? sr.score : 0, rank: P.alive ? sr.rank : st.players.length, alive: P.alive, stars: P.stars, income: P.alive ? TT.income(st, pid) : 0,
       cities: st.cities.filter(c => c.owner === pid).length, units: st.units.filter(u => u.owner === pid).length,
-      techs: Object.keys(P.techs).length, maxOther, turn: st.turn };
+      techs: Object.keys(P.techs).length, maxOther, turn: st.turn, feat: features(st, pid, this.opts.maxTurns) };
   }
 
   // Counterfactual evaluation of candidate plans for the current (model) player, each on its own copy of the game:
