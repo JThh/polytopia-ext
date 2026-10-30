@@ -29,6 +29,7 @@
 // copy. Children get a fresh random seed, so ruins examined inside a search do not reveal what the real game's seed
 // will give, and the view is frozen at the root (see core.js).
 'use strict';
+process.env.POLY_RULES = process.env.POLY_RULES || 'polytopia_live'; // PolyZero plays the live game by default
 const readline = require('readline');
 const TT = require('../../sim/tt');
 const configs = require('../../sim/configs');

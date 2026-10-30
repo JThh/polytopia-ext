@@ -14,3 +14,4 @@ workers: 6
 device: cpu
 seed: 20000
 out: runs/zero/eval.jsonl
+rules: polytopia_live

@@ -5,15 +5,23 @@ language model in [`ml/`](../README.md): a **small network plus Gumbel AlphaZero
 over and over in the simulator. It runs natively on a MacBook Air: the network has about 0.25M parameters,
 self-play runs on the CPU cores, and gradient steps can use the Apple-silicon GPU (PyTorch `mps`).
 
-**Goal: beat the crazy bot.** Crazy is the strongest built-in bot. It plays the hard bot's algorithm and also gets
-+2 stars every turn, which PolyZero does not get. "Beating crazy" here means doing better than crazy itself from
-the same seats on the same maps, measured by a paired evaluation (see [Evaluation](#evaluation)).
+**Rules: the live game.** PolyZero plays The Battle of Polytopia 2.17.3 by default (`POLY_RULES=polytopia_live`,
+[`ml/sim/rulesets/POLYTOPIA_LIVE.md`](../sim/rulesets/POLYTOPIA_LIVE.md)). That covers the current tech tree,
+rafts with scout/rammer/bomber upgrades, cloaks and infiltration, embassies, markets, bridges, starfish, monuments,
+the live score formula and the bots' star bonuses. The classic ruleset (`rules=polytopia`) also works. A network
+belongs to the ruleset it was trained on.
 
-> **Status.** Everything below runs and is tested on CPU (Node tests plus pytest, including an end-to-end run:
-> bot data, warm start, self-play with a league, evaluation and resume). The numbers in
-> [Measured so far](#measured-so-far) come from a 4-core Linux VM in one session. They show the machinery working
-> and the starting point. They do not show crazy being beaten: that takes the long training run this document
-> proposes. No trained weights are included.
+**Goal: beat the crazy bot.** Crazy is the strongest built-in bot. It plays the hard bot's algorithm and, under the
+live rules, gets 3 stars a turn more than a human player (classic: 2). PolyZero plays as a human and gets no bonus.
+"Beating crazy" means doing better than crazy itself from the same seats on the same maps, measured by a paired
+evaluation (see [Evaluation](#evaluation)).
+
+> **Status.** Everything below runs and is tested on CPU under both rulesets (Node tests plus pytest, including an
+> end-to-end run: bot data, warm start, self-play with a league, evaluation and resume). The numbers in
+> [Measured so far](#measured-so-far) come from a 4-core Linux VM in one session: a first run under the classic
+> rules (which exposed the instability fixed in [Stabilising self-play](#stabilising-self-play)) and a short run
+> under the live rules. They show the machinery working and the starting point. They do not show crazy being
+> beaten: that takes the long training run this document proposes. No trained weights are included.
 
 ## Quick start
 
@@ -104,28 +112,34 @@ everything downstream of `ml/sim/actions.js`, the PolyCommand bridge included, w
 | --- | --- | --- |
 | `move`, `attack`, `convert` | unit tile → target tile | |
 | `capture`, `examine`, `recover`, `heal`, `disband` | unit tile | |
-| `upgrade` | unit tile | ship / battleship |
+| `infiltrate` (live) | cloak's tile | |
+| `upgrade` | unit tile | live: scout / rammer / bomber (classic: ship / battleship) |
 | `train`, `reward` | city tile | unit type / reward |
-| `build` | tile | one of 21 kinds (harvests, buildings, temples, road, clear, burn, grow, destroy) |
-| `research` | tribe token | one of 24 techs |
+| `build` | tile | live: one of 29 kinds (harvests incl. starfish, buildings incl. market, temples, road, bridge, clear, burn, grow, destroy, the 7 monuments); classic: 21 |
+| `research` | tribe token | one of 25 techs (classic: 24) |
+| `embassy` (live) | tribe token → rival capital | |
 | `end_turn` | tribe token | |
 
 `core.legal()` lists every legal action, so the network never sees an illegal one and the search never wastes a
-simulation. The list is exhaustive: `test/core.js` replays bot games and checks that every action the bot takes is
-in the list. It also plays every listed action on a copy and checks that it succeeds and survives a tuple round
-trip. One rule matches the real game's pop-up: a pending city level-up reward must be chosen before anything else.
+simulation. The list is exhaustive: `test/core.js` replays bot games under each ruleset and checks that every action
+the bot takes is in the list (embassies, upgrades, starfish and water ruins included). It also plays every listed
+action on a copy and checks that it succeeds and survives a tuple round trip. One rule matches the real game's
+pop-up: a pending city level-up reward must be chosen before anything else. That is the only difference from what
+the bot may do: under the live rules, a city connection can level a city mid-turn, and the bot sometimes keeps
+moving before picking the reward.
 
 ### Observation
 
 What the network gets, all from the acting player's point of view after fog of war:
 
 - **16 categorical bytes per tile**, each with its own learned embedding: terrain (or unexplored, or off-map),
-  elevation, owner, resource, improvement, road/ruin, city (village / mine / rival by seat order), city level, flags
-  and population, unit type, owner, HP, vessel, and can-move / can-attack / veteran flags. Owners are relative:
-  1 = me, then rivals in turn order after me.
-- **81 global numbers**: turn and turns left, mode, player count, stars, income, score and its parts, rank, rivals'
-  score gaps and whether they are alive, explored fraction, my techs, tribe and map type, and the `ended` flag of
-  afterstates.
+  elevation, owner, resource, improvement, road/ruin/bridge/unfound lighthouse, city (village / mine / rival by
+  seat order), city level, flags (capital, walls, reward pending, unit cap, linked to the capital) and population,
+  unit type, owner, HP, vessel, and can-move / can-attack / veteran flags. Owners are relative: 1 = me, then rivals
+  in turn order after me.
+- **87 global numbers** (85 classic): turn and turns left, mode, player count, stars, income, score and its parts,
+  rank, rivals' score gaps and whether they are alive, explored fraction, tribes met, embassies, lighthouses found,
+  pacifist streak, my techs, tribe and map type, and the `ended` flag of afterstates.
 
 The same information is in the PolyState JSON a real-game bridge already produces (`ml/bridge/README.md`), apart from
 each unit's separate can-move / can-attack flags.
@@ -226,36 +240,38 @@ utility difference** to each baseline (mean ± standard error over the same game
 suite when its win rate beats the `bot:crazy` row and the paired difference to `bot:crazy` is positive, beyond
 noise.** The default suites are 1v1 on small and normal maps, a 4-tribe free-for-all, and a domination duel.
 
-Crazy's head start, measured in the simulator (Polytopia rules, paired seats; scripts in the session):
+Crazy's head start, measured in the simulator with paired seats (score games):
 
-| setting | win rate vs crazy | fair share |
-| --- | --- | --- |
-| crazy, 1v1, tiny map, 20 turns (120 games) | 55% | 50% |
-| hard (crazy without the bonus), same | 20% | 50% |
-| crazy, 1v1, small map, 30 turns (60 games) | 45% | 50% |
-| hard, same | 28% | 50% |
-| normal, same | 18% | 50% |
-| hard vs 3 crazy, normal map, 30 turns (60 games) | 10% | 25% |
+| our seat vs crazy | live rules: bonus | live: win | classic: bonus | classic: win | fair share |
+| --- | --- | --- | --- | --- | --- |
+| crazy, 1v1, tiny map, 20 turns (120 games) | +3 | 47% | +2 | 55% | 50% |
+| hard, same | +1 | 22% | 0 | 20% | 50% |
+| normal, same | 0 | 12.5% | 0 | | 50% |
+| crazy, 1v1, small map, 30 turns (60 games) | +3 | 42% | +2 | 45% | 50% |
+| hard, same | +1 | 22% | 0 | 28% | 50% |
+| hard vs 3 crazy, normal map, 30 turns (60 games) | +1 | 5% | 0 | 10% | 25% |
 
-So the bonus alone is worth the difference between 20 to 28% and about 50% in a duel. To surpass crazy, PolyZero has
-to play better than the hard bot by that whole margin.
+"Bonus" is stars a turn over a human player. Under the live rules, the bot playing at a human's income (normal,
+which also adds a little noise) wins one duel in eight against crazy. PolyZero starts from that handicap and has to
+reach about one in two.
 
 ## Measured so far
 
-On a 4-core Linux VM (no GPU), in this session:
+On a 4-core Linux VM (no GPU), in this session. The first experiments ran under the classic rules, before the live
+ruleset landed on this branch; the live run follows below.
 
 | | |
 | --- | --- |
 | simulator cost per search node | clone 0.30 ms, legal actions 0.34 ms, observation 0.05 ms |
-| legal actions per decision (bot games) | mean 46, 95th percentile 137, max 257 |
+| legal actions per decision (bot games) | classic: mean 46, 95th percentile 137, max 257; live: mean 41 to 52 |
 | network inference, 1 CPU thread | 480 positions/s (batch 1), 630 (batch 8), 750 (batch 32) |
 | training step, batch 256, 4 threads | about 0.9 s (forward + backward + AdamW) |
 | self-play, 4 workers, tiny 1v1 maps | 24 games (about 2,000 to 3,600 positions) in 13 to 28 s |
-| warm-start data | 1,200 bot games -> 60k positions in 52 s |
-| warm start, 2 epochs (453 steps) | val hit rate 0.18 -> 0.62 (net's top action is one the bot takes that turn), val value MSE 0.47 -> 0.35 (outcome variance 0.61) |
+| warm-start data | classic: 1,200 bot games -> 60k positions in 52 s; live: 1,500 games -> 84k positions in 80 s |
+| warm start (classic), 2 epochs (453 steps) | val hit rate 0.18 -> 0.62 (net's top action is one the bot takes that turn), val value MSE 0.47 -> 0.35 (outcome variance 0.61) |
 | end-to-end test (`tests/test_pipeline.py`) | about 10 s |
 
-The warm-start net against crazy in 48 paired 1v1 games on tiny maps (20 turns):
+Classic rules: the warm-start net against crazy in 48 paired 1v1 games on tiny maps (20 turns):
 
 | our seat | win | utility | score |
 | --- | --- | --- | --- |
@@ -271,7 +287,7 @@ an early value net matters a lot.
 
 ### Stabilising self-play
 
-The first self-play run, with no blend and no anchor, collapsed within 10 iterations. Measured on the same
+The first self-play run (classic rules, tiny 1v1 maps), with no blend and no anchor, collapsed within 10 iterations. Measured on the same
 positions with 16 simulations:
 
 | net | actions per turn | V(end turn now) − V(position) | end_turn: prior → search target | score vs crazy |
@@ -286,6 +302,15 @@ evaluation went to 0% wins and a score of 375. That is why the defaults now incl
 Both are standard for search plus learning from a weak start (AlphaGo's value/rollout mixing, AlphaStar's
 supervised anchor). Both can be switched off (`selfplay.heuristic=0`, `optim.bc_mix=0`) once the value net is good.
 
+The same run with both on (same warm-start net, same settings otherwise), 10 iterations (about 8 minutes):
+
+| | actions per turn | paired eval vs crazy (48 games) |
+| --- | --- | --- |
+| without blend and anchor | 5.1 -> 1.7 | 0% wins, score 375 |
+| with blend (λ = 0.5, annealed) and anchor (20%) | 5.1 -> 4.6 | **14.6% wins** (warm start: 2 to 10%), score 1749; paired utility vs the hard bot −0.03 ± 0.11, i.e. level with it |
+
+LIVE_RESULTS
+
 
 ## Compute plan
 
@@ -293,11 +318,11 @@ A MacBook Air with 8 cores, 6 of them for self-play workers, should make roughly
 That is about 100 to 150 iterations of 24 games per hour on tiny maps, and fewer as games get longer. A plan, with
 gates:
 
-| phase | iterations | games | target |
+| phase | iterations | games | gate (live rules, paired vs crazy) |
 | --- | --- | --- | --- |
-| warm start | | 2,000 bot games | hit rate above 0.6 |
-| tiny 1v1 | 0 to 30 | about 700 | beats hard (above 20% vs crazy on tiny) |
-| tiny/small, 2 to 3 players | 30 to 120 | about 2,000 | parity with crazy on duel_small (about 45 to 50%) |
+| warm start | | 2,000 bot games | hit rate above 0.55 |
+| tiny 1v1 | 0 to 30 | about 700 | above the normal bot at human income (12.5%), then hard (22%) |
+| tiny/small, 2 to 3 players | 30 to 120 | about 2,000 | parity with crazy on duel_small (about 42 to 47%) |
 | small to large, 2 to 4 players | 120 to 300+ | 4,000+ | surpass crazy: duel and FFA win rates above the crazy rows, paired difference > 0 |
 
 That is a few evenings on a laptop for the first two phases. The last phase is where a many-core box
@@ -326,8 +351,12 @@ PolyCommand bridge of `ml/bridge/README.md`. What remains:
 - **Score-mode versus domination play.** The utility treats them alike, and the curriculum mixes them late. Separate
   evaluation suites will show whether that needs per-mode weighting.
 - **Distillation to the language model.** Searched turns (π′ sequences) as SFT targets for `ml/polyrl`.
-- **Newer game content.** The ruleset is the classic game, as in `ml/`. New units or verbs need entries in
-  `core.js` (the vocabularies are read from the ruleset, so most of it is automatic) and a fresh warm start.
+- **The live rules' long game.** Monuments, temples that grow for 10 turns, embassies and connections pay off over
+  many turns. A 20-turn tiny duel does not reward them, so the curriculum has to reach 30+ turn games before the
+  network can learn them. Special tribes (Aquarion, Polaris, ∑∫ỹriȱŋ, Cymanti) are not in the ruleset yet.
+- **Game updates.** New units, buildings or verbs need ruleset entries and, for a new verb, a line in `core.legal`.
+  The vocabularies are read from the ruleset, so most of it is automatic. Then a fresh warm start: a network belongs
+  to the ruleset it was trained on, and the workers refuse a mismatch.
 
 ## Files
 

@@ -25,7 +25,7 @@ class SimError(RuntimeError):
 
 
 class Sim:
-    def __init__(self, rules: str = "polytopia", node: str | None = None):
+    def __init__(self, rules: str = "polytopia_live", node: str | None = None):
         node = node or os.environ.get("NODE", "node")
         if not shutil.which(node):
             raise SimError(f"Node.js not found ({node}); install Node 18+ or set NODE")

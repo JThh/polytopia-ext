@@ -102,7 +102,7 @@ class TrainConfig:
     actor_device: str = "cpu"    # self-play inference (small batches: the CPU is usually fastest)
     eval_every: int = 10
     seed: int = 1
-    rules: str = "polytopia"
+    rules: str = "polytopia_live"  # the live game (2.17.3); "polytopia" for the classic ruleset
 
 
 def _log(path: Path, row: dict) -> None:

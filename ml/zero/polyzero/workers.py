@@ -39,6 +39,9 @@ def _evaluator(path: str, device: str):
         if len(nets) > 12:
             nets.pop(next(iter(nets)))
         net, _ = load(path, device)
+        rules = _STATE["sim"].spec["rules"]
+        if net.spec.get("rules") != rules or net.spec["fields"] != _STATE["sim"].spec["fields"]:
+            raise ValueError(f"{path} was trained under the {net.spec.get('rules')} rules, the simulator runs {rules}")
         nets[key] = Evaluator(net, device)
     return nets[key]
 
@@ -49,7 +52,7 @@ def run_specs(job: dict) -> list[dict]:
     from .play import Agent, GameSpec, PlayConfig, play
 
     if "sim" not in _STATE:
-        _init(job.get("rules", "polytopia"), job.get("threads", 1))
+        _init(job.get("rules", "polytopia_live"), job.get("threads", 1))
     dev = job.get("device", "cpu")
     search, eval_search, pcfg = SearchConfig(**job["search"]), SearchConfig(**job["eval_search"]), PlayConfig(**job["play"])
     agents = {}
@@ -78,7 +81,7 @@ def run_specs(job: dict) -> list[dict]:
 class Pool:
     """`workers` processes (0: play in this process). Spawned, not forked, so it behaves the same on macOS."""
 
-    def __init__(self, workers: int, rules: str = "polytopia", threads: int = 1):
+    def __init__(self, workers: int, rules: str = "polytopia_live", threads: int = 1):
         self.workers, self.rules, self.threads = workers, rules, threads
         self.ex = ProcessPoolExecutor(workers, mp_context=mp.get_context("spawn"), initializer=_init, initargs=(rules, threads)) if workers > 0 else None
 

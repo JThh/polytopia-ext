@@ -53,3 +53,4 @@ device: auto               # mps on Apple silicon
 actor_device: cpu
 eval_every: 10
 seed: 1
+rules: polytopia_live    # the live game (2.17.3); polytopia = the classic ruleset (regenerate the bot data with POLY_RULES=polytopia)

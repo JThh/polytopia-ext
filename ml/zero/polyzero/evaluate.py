@@ -6,8 +6,8 @@ Every game of a suite is played several times from the same seed (same map, trib
 in the seat, and once with each baseline bot in it. The other seats are the suite's opponent (the crazy bot by
 default). Baselines:
   bot:crazy  the opponent itself in our seat: what "as good as crazy" means on these games (about 1/n wins)
-  bot:hard   the same bot without crazy's +2 stars a turn: the handicap the network plays with (net seats get no
-             bot bonus)
+  bot:hard   the same search-free bot with a smaller star bonus (live rules: crazy +3, hard +1 a turn over a human;
+             classic: crazy +2, hard 0). Net seats play as humans and get no bonus.
 The network beats crazy on a suite when its paired utility difference to the bot:crazy baseline is positive, i.e. it
 does better from the same seats on the same maps without the extra income.
 """
@@ -45,6 +45,7 @@ class EvalConfig:
     device: str = "cpu"
     seed: int = 20_000
     out: str | None = None
+    rules: str = "polytopia_live"
 
 
 def wilson(k: int, n: int, z: float = 1.96) -> tuple[float, float]:
@@ -121,7 +122,7 @@ def print_report(report: dict) -> None:
 
 def evaluate(cfg: EvalConfig, pool: Pool | None = None) -> dict:
     own = pool is None
-    pool = pool or Pool(cfg.workers)
+    pool = pool or Pool(cfg.workers, rules=cfg.rules)
     t0 = time.time()
     try:
         results = pool.run(specs_for(cfg), cfg.weights, cfg.search, cfg.search, cfg.play, device=cfg.device, seed=cfg.seed)

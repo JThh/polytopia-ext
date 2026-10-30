@@ -15,6 +15,9 @@
 // Fog of war: encode() and legal() show only what `view` (default: the player's explored tiles) covers. During a
 // search the view is frozen at the root, so trying a move cannot reveal what lies behind the fog before the move is
 // actually played.
+//
+// Rulesets: polytopia (classic) and polytopia_live (2.17.3: cloaks, embassies, rafts, starfish, bridges, monuments).
+// Vocabularies are read from the loaded ruleset, so a network belongs to the ruleset it was trained on.
 'use strict';
 const TT = require('../../sim/tt');
 const A = require('../../sim/actions');
@@ -22,8 +25,8 @@ const A = require('../../sim/actions');
 const PAD = 20;               // network grid: every Polytopia map size (11 to 20) fits, smaller maps are padded
 const GLOBAL = PAD * PAD;     // src/dst of research and end_turn (the network's "tribe" token)
 
-const VERBS = ['end_turn', 'move', 'attack', 'convert', 'capture', 'examine', 'recover', 'heal', 'disband', 'upgrade', 'train', 'reward', 'build', 'research']
-  .filter(v => A.VERBS[v]);
+const VERBS = ['end_turn', 'move', 'attack', 'convert', 'capture', 'examine', 'recover', 'heal', 'disband', 'upgrade', 'infiltrate', 'train', 'reward',
+  'build', 'research', 'embassy'].filter(v => A.VERBS[v] && (v !== 'embassy' || A.VERBS.embassy.actor === 'tribe'));
 const V = {}; VERBS.forEach((v, i) => { V[v] = i; });
 
 const UNIT_TYPES = Object.keys(TT.UNITS);           // trainable units + giant
@@ -31,8 +34,9 @@ const NAVAL = Object.keys(TT.NAVAL);                // boat, ship, battleship
 const REWARDS = Object.keys(TT.REWARDS);
 const BUILDS = Object.keys(TT.BUILD);
 const TECHS = TT.TECH_ORDER.slice();
-const RES = ['fruit', 'crop', 'game', 'fish', 'ore', 'whale'];
-const IMPS = ['farm', 'mine', 'lumber', 'port', 'windmill', 'forge', 'sawmill', 'customs', 'temple', 'forest_temple', 'mountain_temple', 'water_temple', 'market'];
+const RES = ['fruit', 'crop', 'game', 'fish', 'ore', 'whale', 'starfish'];
+const NOT_IMP = ['fruit', 'hunt', 'fish', 'whale', 'starfish', 'road', 'bridge', 'clear', 'grow', 'burn', 'destroy'];
+const IMPS = BUILDS.filter(k => NOT_IMP.indexOf(k) < 0);           // buildings that stand on a tile
 const TRIBES = TT.TRIBES.map(t => t.id);
 const MAP_TYPES = Object.keys(TT.MAP_TYPES);
 
@@ -48,10 +52,10 @@ const FIELDS = [
   ['owner', 7],       // 0 nobody / unknown, 1 me, 2.. rivals in turn order after me
   ['resource', RES.length + 2],
   ['improvement', IMPS.length + 2],
-  ['road_ruin', 4],   // bit 1 road, bit 2 ruins
+  ['road_ruin', 16],  // bit 1 road, 2 ruins, 4 bridge, 8 lighthouse not yet found by me (live rules)
   ['city', 8],        // 0 none, 1 village, 2 mine, 3.. rival (by relative seat)
   ['city_level', 9],
-  ['city_flags', 16], // 1 capital, 2 walls, 4 reward pending (mine), 8 unit cap reached (mine)
+  ['city_flags', 32], // 1 capital, 2 walls, 4 reward pending (mine), 8 unit cap reached (mine), 16 linked to capital
   ['city_pop', 9],    // mine only
   ['city_extra', 8],  // 1 border radius 2, 2 park, 4 workshop (mine only)
   ['unit', UNIT_TYPES.length + 1],
@@ -67,6 +71,7 @@ const GLOB = [
   'turn', 'turns_left', 'mode_score', 'mode_domination', 'p2', 'p3', 'p4', 'p5', 'p6', 'width', 'ended',
   'stars', 'income', 'score', 'rank', 'alive_frac', 'explored', 'cities', 'units', 'kills', 'losses', 'tech_cost',
   'riv1', 'riv2', 'riv3', 'riv4', 'riv5', 'riv1_alive', 'riv2_alive', 'riv3_alive', 'riv4_alive', 'riv5_alive',
+  'met', 'embassies', 'lighthouses', 'pacifist', // live rules (0 under classic)
 ].concat(TT.SCORE_PARTS.map(p => 'part_' + p.key), TECHS.map(k => 'tech_' + k), TRIBES.map(k => 'tribe_' + k), MAP_TYPES.map(k => 'map_' + k));
 const G = GLOB.length;
 
@@ -86,7 +91,8 @@ function encode(st, pid, opts) {
   const W = st.W, H = st.H, n = st.players.length, P = st.players[pid];
   if (W > PAD || H > PAD) throw new Error('map larger than ' + PAD + 'x' + PAD);
   const view = opts.view || P.explored, ended = !!opts.ended;
-  const tiles = new Uint8Array(PAD * PAD * F);
+  const tiles = new Uint8Array(PAD * PAD * F), L = P.live || null;
+  const lights = new Set(st.lighthouses || []);
   for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
     const i = y * W + x, o = (y * PAD + x) * F, tl = st.tiles[i];
     if (!view[i]) { tiles[o] = 1; continue; }
@@ -95,12 +101,12 @@ function encode(st, pid, opts) {
     tiles[o + 2] = rel(tl.owner, pid, n);
     if (tl.res && !tl.imp) { const r = RES.indexOf(tl.res); tiles[o + 3] = r >= 0 ? r + 1 : RES.length + 1; }
     if (tl.imp) { const m = IMPS.indexOf(tl.imp); tiles[o + 4] = m >= 0 ? m + 1 : IMPS.length + 1; }
-    tiles[o + 5] = (tl.road && tl.site < 0 ? 1 : 0) | (tl.ruin ? 2 : 0);
+    tiles[o + 5] = (tl.road && tl.site < 0 && !tl.bridge ? 1 : 0) | (tl.ruin ? 2 : 0) | (tl.bridge ? 4 : 0) | (lights.has(i) && L && L.lights.indexOf(i) < 0 ? 8 : 0);
     if (tl.site >= 0) {
       const c = st.cities[tl.site], mine = c.owner === pid;
       tiles[o + 6] = c.owner < 0 ? 1 : 1 + rel(c.owner, pid, n);
       tiles[o + 7] = clamp(c.level, 0, 8);
-      tiles[o + 8] = (c.capital ? 1 : 0) | (c.walls ? 2 : 0) | (mine && c.pending.length ? 4 : 0) | (mine && TT.cityUnits(st, c) >= TT.cityCap(c) ? 8 : 0);
+      tiles[o + 8] = (c.capital ? 1 : 0) | (c.walls ? 2 : 0) | (mine && c.pending.length ? 4 : 0) | (mine && TT.cityUnits(st, c) >= TT.cityCap(c) ? 8 : 0) | (c.linked ? 16 : 0);
       if (mine) {
         tiles[o + 9] = clamp(c.pop, 0, 8);
         tiles[o + 10] = (c.radius >= 2 ? 1 : 0) | (c.parks ? 2 : 0) | (c.workshop ? 4 : 0);
@@ -141,6 +147,7 @@ function encode(st, pid, opts) {
   for (let d = 1; d < n; d++) { const q = (pid + d) % n; riv.push([(scores[q] - me) / 2000, st.players[q].alive ? 1 : 0]); }
   for (let r = 0; r < 5; r++) put(r < riv.length ? riv[r][0] : 0);
   for (let r = 0; r < 5; r++) put(r < riv.length ? riv[r][1] : 0);
+  put(L ? L.met.length / 5 : 0); put(L ? L.embassies.length / 5 : 0); put(L ? L.lights.length / 4 : 0); put(L ? Math.min(5, L.pacifist) / 5 : 0);
   const b = TT.scoreBreakdown(st, pid);
   for (const p of TT.SCORE_PARTS) put((b[p.key] || 0) / 1000);
   for (const t of TECHS) put(P.techs[t] ? 1 : 0);
@@ -171,10 +178,11 @@ function legal(st, pid, opts) {
   for (const u of mine) {
     const p = u.y * PAD + u.x, S = TT.stats(st, u), tl = st.tiles[u.y * W + u.x];
     if (TT.canCapture(st, u)) push(V.capture, p, p, 0);
-    if (V.examine != null && tl.ruin && !u.naval) push(V.examine, p, p, 0);
+    if (V.examine != null && tl.ruin && !!u.naval === TT.isWater(tl.t)) push(V.examine, p, p, 0); // boats examine water ruins (live)
     if (u.canMove && u.canAttack && u.hp < S.maxHp) push(V.recover, p, p, 0);
     if (V.heal != null && u.canMove && u.canAttack && TT.has(S, 'heal') && TT.healTargets(st, u).length) push(V.heal, p, p, 0);
-    if (P.techs.free_spirit || TT.RULESET.name !== 'polytopia') push(V.disband, p, p, 0);
+    if (P.techs.free_spirit || TT.RULESET.name === 'tessera') push(V.disband, p, p, 0);
+    if (V.infiltrate != null && TT.canInfiltrate(st, u)) push(V.infiltrate, p, p, 0);
     for (const k of TT.upgradeOptions(st, u)) if (P.stars >= TT.NAVAL[k].cost) push(V.upgrade, p, p, ARG['naval:' + k]);
     const conv = TT.has(S, 'convert');
     for (const d of TT.attackTargets(st, u)) if (view[d.y * W + d.x]) push(conv ? V.convert : V.attack, p, d.y * PAD + d.x, 0);
@@ -185,8 +193,15 @@ function legal(st, pid, opts) {
     const p = c.y * PAD + c.x;
     for (const k of TT.UNIT_ORDER) if (TT.canTrain(st, c.id, k)) push(V.train, p, p, ARG['unit:' + k]);
   }
+  if (V.embassy != null && P.techs.diplomacy && P.live && P.stars >= TT.embassyCost(st, pid)) {
+    for (const c of st.cities) {
+      if (!c.capital || c.owner < 0 || c.owner === pid || P.live.met.indexOf(c.owner) < 0 || P.live.embassies.indexOf(c.owner) >= 0) continue;
+      push(V.embassy, GLOBAL, c.y * PAD + c.x, 0);
+    }
+  }
+  const unitTiles = new Set(mine.map(u => u.y * W + u.x)); // starfish (live) are fished wherever my unit stands
   for (let i = 0; i < st.tiles.length; i++) {
-    if (st.tiles[i].owner !== pid) continue;
+    if (st.tiles[i].owner !== pid && !unitTiles.has(i)) continue;
     const x = i % W, y = (i / W) | 0;
     for (const k of TT.buildOptions(st, pid, x, y)) if (TT.canBuild(st, pid, x, y, k)) push(V.build, y * PAD + x, y * PAD + x, ARG['build:' + k]);
   }
@@ -201,6 +216,7 @@ function toTuple(st, q) {
   if (verb === 'end_turn') return A.END.slice();
   if (verb === 'research') return ['tribe', 'research', argName(q[3])];
   const [sx, sy] = ppos(q[1]), [dx, dy] = ppos(q[2]);
+  if (verb === 'embassy') return ['tribe', 'embassy', [dx, dy]];
   if (verb === 'build') return ['tribe', 'build', argName(q[3]), [sx, sy]];
   if (verb === 'train' || verb === 'reward') {
     const tl = TT.inB(st, sx, sy) ? st.tiles[sy * st.W + sx] : null;
@@ -220,6 +236,7 @@ function fromTuple(st, t) {
   if (v == null) return null;
   if (verb === 'end_turn') return [v, GLOBAL, GLOBAL, 0];
   if (verb === 'research') return [v, GLOBAL, GLOBAL, ARG['tech:' + t[2]] || 0];
+  if (verb === 'embassy') return [v, GLOBAL, t[2][1] * PAD + t[2][0], 0];
   if (verb === 'build') return [v, t[3][1] * PAD + t[3][0], t[3][1] * PAD + t[3][0], ARG['build:' + t[2]] || 0];
   if (verb === 'train' || verb === 'reward') {
     const c = st.cities[Number(t[0].split('#')[1])];

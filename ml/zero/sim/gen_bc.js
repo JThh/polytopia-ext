@@ -6,8 +6,8 @@
 // policy target is the bot's next action (half the mass) plus every action it still takes later that turn that is
 // already legal now (the other half, shared equally). end_turn only counts when it is the next action.
 //
-// usage: node ml/zero/sim/gen_bc.js --games 800 --out runs/zero/bc --workers 4 [--seed 1] [--keep 0.12]
-//        [--constraints '{"sizes":{"tiny":1,"small":1}}']
+// usage: [POLY_RULES=polytopia_live] node ml/zero/sim/gen_bc.js --games 800 --out runs/zero/bc --workers 4 [--seed 1]
+//        [--keep 0.12] [--constraints '{"sizes":{"tiny":1,"small":1}}']      (POLY_RULES=polytopia: the classic game)
 //
 // Output: one shard per worker, <out>/bc-<w>.json (header) + <out>/bc-<w>.<array>.bin (raw little-endian arrays):
 //   tiles  uint8   [n, PAD*PAD*F]   glob  float32 [n, G]     legal  int16 [total, 4]   loff  int32 [n + 1]
@@ -16,6 +16,7 @@
 //   out    float32 [n, 5]   final rank, players, final score, best rival final score, alive
 //   info   int32   [n, 4]   game, seat, turn, difficulty (0 easy, 1 normal, 2 hard, 3 crazy)
 'use strict';
+process.env.POLY_RULES = process.env.POLY_RULES || 'polytopia_live'; // PolyZero plays the live game by default
 const fs = require('fs');
 const path = require('path');
 const { fork } = require('child_process');

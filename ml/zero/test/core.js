@@ -2,7 +2,7 @@
 // tuples convert both ways, observations respect fog of war (and the frozen view of a search), and the server
 // protocol plays a whole game with search handles that are all freed again.
 'use strict';
-process.env.POLY_RULES = process.env.POLY_RULES || 'polytopia';
+process.env.POLY_RULES = process.env.POLY_RULES || 'polytopia_live';
 const path = require('path');
 const { spawn } = require('child_process');
 const readline = require('readline');
@@ -18,6 +18,8 @@ const N = Number(process.argv[2] || 8);
 // ---- bot games: every bot action is in the legal list; every legal action plays; quads <-> tuples
 {
   let hit = 0, miss = 0, forced = 0, played = 0, sizes = 0, positions = 0;
+  const verbs = {};
+  let pendingOther = 0;
   for (let g = 0; g < N; g++) {
     const { settings, difficulties } = configs.sample(900 + g, { sizes: { tiny: 1, small: 1, normal: 1 }, players: [2, 4] });
     TT.ML.seedRandom(g);
@@ -27,6 +29,7 @@ const N = Number(process.argv[2] || 8);
     TT.ML.listen(st, {
       before(s, name, args) {
         const t = A.fromCommand(s, name, args), q = C.fromTuple(s, t), L = C.legal(s, s.current);
+        verbs[t[1]] = (verbs[t[1]] || 0) + 1;
         positions++; sizes += L.length / 4;
         if (k++ % 25 === 0) { // every legal action plays on a copy, and survives a tuple round trip
           for (let i = 0; i < L.length; i += 4) {
@@ -37,13 +40,14 @@ const N = Number(process.argv[2] || 8);
             played++;
           }
         }
-        return { q, L };
+        return { q, L, t };
       },
       after(s, name, args, r, ctx) {
         if (!r) return;
         if (ctx.q && C.indexOf(ctx.L, ctx.q) >= 0) hit++;
         else if (ctx.L[0] === C.V.reward && name === 'endTurn') forced++;
-        else { miss++; console.log('FAIL bot action not in the legal list:', name, JSON.stringify(A.fromCommand(s, name, args))); }
+        else if (ctx.L[0] === C.V.reward) pendingOther++;
+        else { miss++; console.log('FAIL bot action not in the legal list:', name, JSON.stringify(ctx.t)); }
       },
     });
     while (!st.over && st.turn <= 25) { TT.ML.botTurn(st); if (!st.over) TT.endTurn(st); }
@@ -51,7 +55,8 @@ const N = Number(process.argv[2] || 8);
   check(miss === 0, 'every bot action is a legal atomic action (' + hit + ' matched, ' + miss + ' missing)');
   check(hit > 1000 && played > 1000, 'enough coverage (' + hit + ' bot actions, ' + played + ' legal actions played)');
   console.log('bot actions matched ' + hit + ' (+' + forced + ' turn ends with a reward pending), legal actions played ' + played +
-    ', mean legal set ' + (sizes / positions).toFixed(1));
+    ', mean legal set ' + (sizes / positions).toFixed(1) + ' (' + TT.RULESET.name + '); ' + pendingOther + ' bot actions taken while a reward was pending');
+  console.log('bot verbs: ' + Object.keys(verbs).map(v => v + ' ' + verbs[v]).join(', '));
 }
 
 // ---- observations: shapes, fog of war, frozen view
