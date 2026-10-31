@@ -97,8 +97,7 @@ const N = Number(process.argv[2] || 8);
 {
   const eq = (a, b) => Buffer.compare(Buffer.from(a.buffer, a.byteOffset, a.byteLength), Buffer.from(b.buffer, b.byteOffset, b.byteLength)) === 0;
   const sameObs = (a, b) => eq(a.tiles, b.tiles) && eq(a.glob, b.glob);
-  const MET = C.GLOB.indexOf('met');
-  let positions = 0, blocking = 0, children = 0, same = 0, unmet = 0;
+  let positions = 0, blocking = 0, children = 0, same = 0, fair = 0, meetings = 0;
   for (let g = 0; g < N + 4; g++) {
     const { settings, difficulties } = configs.sample(700 + g, { sizes: { tiny: 1, small: 2 }, players: [2, 4] });
     TT.ML.seedRandom(g);
@@ -135,6 +134,11 @@ const N = Number(process.argv[2] || 8);
         const real = C.legal(st, pid, { view });
         if (!eq(real, C.legal(alt, pid, { view }))) blocking++; // the true board's legal moves did change
         const A0 = C.fogCopy(st, pid, view), B0 = C.fogCopy(alt, pid, view), oA = C.encode(A0, pid, { view });
+        // tribes the player can see now: the only ones a search may meet (and be paid for, as in the game)
+        const seen = new Set();
+        for (const u of st.units) if (u.owner !== pid && view[u.y * W + u.x] && TT.visibleTo(st, u, pid)) seen.add(u.owner);
+        for (const k of st.cities) if (k.owner >= 0 && k.owner !== pid && view[k.y * W + k.x]) seen.add(k.owner);
+        const met0 = A0.players[pid].live ? A0.players[pid].live.met.slice() : [];
         check(sameObs(C.encode(st, pid, { view }), oA), 'a fog copy is observed exactly as the real position');
         check(sameObs(oA, C.encode(B0, pid, { view })) && eq(C.legal(A0, pid, { view }), C.legal(B0, pid, { view })), 'fog copies agree whatever is under the fog');
         for (let i = 0; i < real.length; i += 4) {
@@ -142,13 +146,16 @@ const N = Number(process.argv[2] || 8);
           if (q[0] === C.V.end_turn) continue;
           const a = TT.ML.clone(A0), b = TT.ML.clone(B0);
           a.rng = b.rng = 12345;
-          const ra = C.searchApply(a, pid, q), rb = C.searchApply(b, pid, q);
+          const ra = C.apply(a, pid, q), rb = C.apply(b, pid, q);
           check(ra.ok && rb.ok, 'a real legal action also plays on the fog copy: ' + JSON.stringify(ra.tuple));
           const ca = C.encode(a, pid, { view });
           children++;
           if (sameObs(ca, C.encode(b, pid, { view })) && eq(C.legal(a, pid, { view }), C.legal(b, pid, { view }))) same++;
           else console.log('FAIL search child depends on the fog:', JSON.stringify(ra.tuple));
-          if (ca.glob[MET] === oA.glob[MET]) unmet++;
+          const met = a.players[pid].live ? a.players[pid].live.met.filter(o => met0.indexOf(o) < 0) : [];
+          meetings += met.length;
+          if (met.every(o => seen.has(o))) fair++;
+          else console.log('FAIL a search met a tribe the player cannot see:', met.join(','), JSON.stringify(ra.tuple));
         }
       }
       TT.ML.botTurn(st);
@@ -157,9 +164,9 @@ const N = Number(process.argv[2] || 8);
   }
   check(blocking >= 2, 'hidden units changed the true legal moves in enough positions (' + blocking + ' of ' + positions + ')');
   check(same === children, 'search children are the same whatever hides under the fog (' + same + '/' + children + ')');
-  check(unmet === children, 'no tribe is met inside a search (' + unmet + '/' + children + ')');
+  check(fair === children, 'a search only meets tribes the player already sees (' + fair + '/' + children + ')');
   console.log('fog: ' + positions + ' positions with hidden units placed in my way (' + blocking + ' change the true legal moves), ' +
-    children + ' search children compared');
+    children + ' search children compared, ' + meetings + ' meetings with tribes in view');
 }
 
 // ---- server: a whole game through new / step (random legal actions) with every search handle freed

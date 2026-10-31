@@ -76,7 +76,7 @@ Plain AlphaZero does not fit Polytopia out of the box. Each difficulty below has
 | A turn is 5 to 50 actions, so whole turns are far too many to enumerate | Search over **atomic actions**: one move, attack, build or research per tree edge, end_turn included |
 | 2 to 6 players, and rivals move between my turns | The tree covers **my own turn**; the end_turn leaf is an **afterstate** the value net scores, so rivals' replies are folded into the value. Rivals are real opponents during self-play: bots, past selves, or the net itself |
 | Branching is large: 46 legal actions on average in bot games, 250+ late in big games | **Gumbel root search** (Danihelka et al., 2022): sample k candidates without replacement, then sequential halving. Policy improvement is guaranteed even with 8 to 32 simulations, where PUCT is not |
-| Fog of war | The network only sees the player's view. The search runs on a **fog copy** that holds only what the player can know, with the view frozen at the root and no rewards for meeting a tribe, so trying moves cannot uncover anything (see [Fog of war](#fog-of-war)) |
+| Fog of war | The network only sees the player's view. The search plays the game's own rules on a **fog copy** that holds only what the player can know, with the view frozen at the root, so trying moves cannot uncover anything (see [Fog of war](#fog-of-war)) |
 | Chance (ruins, explorer rewards) | Every search state gets a **fresh random seed**, so the search samples outcomes instead of reading the real game's seed |
 | Long games with sparse outcomes (300 to 1,000 decisions per player) | A **warm start** from the built-in bots; **playout-cap randomisation** (a quarter of the decisions get the full search and become policy targets, the rest are cheap); a **curriculum** from tiny 1v1 maps to full games |
 | Over-fitting to one opponent | A **league**: each self-play game is against the current net, crazy, hard, or a snapshot of an earlier net |
@@ -151,23 +151,28 @@ each unit's separate can-move / can-attack flags.
 
 ### Fog of war
 
-The network sees only the player's explored tiles. The search must not learn more by trying moves, so it never runs
-on the real position (`core.fogCopy`, `core.searchApply`):
+The search plays the game's own rules, scoring included: meeting a tribe pays its stars, uncovering a lighthouse
+grows the capital, exactly as in the live game. What it must not do is act on information the player does not
+have yet, so it never runs on the real position. It runs on a **fog copy** (`core.fogCopy`) that holds only what the
+player can know:
 
-- It starts from a **fog copy**. Rival units the player cannot see (under the fog, or cloaked) are taken off the
-  board, and ruins and resources on unexplored tiles are cleared. Rival scores stay as the public scoreboard shows
-  them. A simulated move can never be blocked by a hidden unit or its zone of control, or find hidden ruins or
-  starfish.
-- The view stays **frozen at the root**: tiles a simulated move would reveal stay hidden, and attacks need a target
-  that was visible at the root.
-- **Meeting a tribe pays nothing** inside a search (the live rules pay stars for it): no one can know before moving
-  whether a move uncovers a rival.
-- Every search state gets a **fresh random seed**, so ruins and explorer rewards are sampled, not read from the real
-  game's seed.
+- Rival units the player cannot see (under the fog, or cloaked) are taken off the board. A simulated move can never
+  be blocked by a hidden unit or its zone of control.
+- Ruins and resources on unexplored tiles are cleared, so a search never finds hidden ruins or starfish.
+- A city on an unexplored tile whose tribe the player has not met becomes a plain village. A search can therefore
+  only meet tribes the player already sees, and is paid for that as the game would pay it.
+- Rival scores stay as the public scoreboard shows them (a per-player offset makes up for what was taken off), so
+  the observation of the fog copy is exactly the real position's.
+
+The view also stays **frozen at the root**: tiles a simulated move would reveal stay hidden, and attacks need a
+target that was visible at the root. Every search state gets a **fresh random seed**, so ruins and explorer rewards
+are sampled, not read from the real game's seed.
 
 `test/core.js` hides rival units where they would block one of the player's moves, adds and removes ruins under the
-fog, and checks that the fog copy and every search child are byte-identical either way. With hidden units left on
-the fog copy, that test fails.
+fog, and checks that the fog copy and every search child are byte-identical either way. It also checks that a
+search only ever meets tribes the player already sees. Each check fails when its part of the fog copy is switched
+off: with hidden units left on the copy, children differ; with hidden cities left on it, searches met 25 unseen
+tribes.
 
 Over 1,026 live-rules turn starts from bot games, before this: 7.2% had a move whose search child gave away something
 hidden, mostly the stars for meeting a tribe. After: 0%. Two things remain, both fair. A move that uncovers a

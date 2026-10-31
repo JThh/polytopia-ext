@@ -4,7 +4,6 @@
 //   legal(st, pid, opts)   -> Int16Array(4 * n): one quad (verb, src, dst, arg) per legal atomic action
 //   apply(st, pid, quad)   -> { ok, err, end, tuple, evs }   runs the action through the shared tuple executor
 //   fogCopy(st, pid, view) -> the position as `pid` can know it: where every search starts (see below)
-//   searchApply(st, pid, q) -> apply() inside a search, with discoveries that cannot be foreseen held back
 //
 // A turn is a sequence of atomic actions (one engine call each) closed by end_turn, so the search can branch on
 // every single decision. Quads are position based (no unit or city ids), so the same quad means the same action on
@@ -15,12 +14,13 @@
 // trained PolyZero agent can drive the same PolyCommand bridge.
 //
 // Fog of war: encode() and legal() show only what `view` (default: the player's explored tiles) covers. A search
-// never runs on the real position. It starts from fogCopy(), which holds only what the player can know: units it
-// cannot see are off the board (their score stays on the public scoreboard through a per-player offset), and ruins
-// and resources under the fog are gone. The view is frozen at the root, and searchApply() holds back the stars for
-// meeting a tribe, which no one can foresee. So a search cannot learn about the fog by trying moves: a simulated move
-// is never blocked by a hidden unit or its zone of control, never finds hidden ruins or starfish, and never meets a
-// tribe. The real game's legal moves still follow the true board, as the game does.
+// plays the game's own rules, scoring included, but never on the real position: it starts from fogCopy(), which holds
+// only what the player can know. Units it cannot see are off the board, ruins and resources under the fog are gone,
+// and the hidden cities of tribes it has not met are plain villages; the scoreboard keeps every tribe's real score
+// through a per-player offset. The view is frozen at the root. So a search cannot learn about the fog by trying
+// moves: a simulated move is never blocked by a hidden unit or its zone of control, never finds hidden ruins or
+// starfish, and can only meet a tribe the player already sees (and then is paid for it, as in the game). The real
+// game's legal moves still follow the true board, as the game does.
 //
 // Rulesets: polytopia (classic) and polytopia_live (2.17.3: cloaks, embassies, rafts, starfish, bridges, monuments).
 // Vocabularies are read from the loaded ruleset, so a network belongs to the ruleset it was trained on.
@@ -274,12 +274,15 @@ function publicScores(st) {
 }
 
 // The position as `pid` can know it, given its explored tiles `view`. Rivals' units it cannot see (under the fog, or
-// cloaked) are removed; ruins and resources on unexplored tiles are cleared. Its observation is the same as the real
-// position's, and it is the same whatever hides under the fog.
+// cloaked) are removed; ruins and resources on unexplored tiles are cleared; a city on an unexplored tile whose tribe
+// the player has not met becomes an unowned village, so no search can meet that tribe through it. Its observation
+// is the same as the real position's, and it is the same whatever hides under the fog.
 function fogCopy(st, pid, view) {
-  const c = TT.ML.clone(st), W = c.W;
-  const before = c.players.map(P => P.alive ? TT.score(c, P.id) : 0);
+  const c = TT.ML.clone(st), W = c.W, P = c.players[pid];
+  const before = c.players.map(Q => Q.alive ? TT.score(c, Q.id) : 0);
+  const met = new Set(TT.metRivals(c, pid).concat(P.live ? P.live.met : []));
   c.units = c.units.filter(u => u.owner === pid || (view[u.y * W + u.x] && TT.visibleTo(c, u, pid)));
+  for (const k of c.cities) if (k.owner >= 0 && k.owner !== pid && !met.has(k.owner) && !view[k.y * W + k.x]) { k.owner = -1; k.capital = false; }
   for (let i = 0; i < c.tiles.length; i++) {
     if (view[i]) continue;
     const t = c.tiles[i];
@@ -287,20 +290,8 @@ function fogCopy(st, pid, view) {
     if (!t.imp) t.res = null;
   }
   TT.bump(c);
-  c.fog = { pid, offsets: c.players.map((P, q) => P.alive ? before[q] - TT.score(c, q) : 0) };
+  c.fog = { pid, offsets: c.players.map((Q, q) => Q.alive ? before[q] - TT.score(c, q) : 0) };
   return c;
-}
-
-// apply() on a search position. Meeting a tribe (live rules pay stars for it) is undone: whether a move uncovers a
-// rival cannot be known before the move is played, so the search must not be paid for guessing right.
-function searchApply(st, pid, q) {
-  const r = apply(st, pid, q), P = st.players[pid];
-  for (const e of r.evs || []) {
-    if (e.type !== 'meet' || e.pid !== pid) continue;
-    P.stars -= e.stars;
-    if (P.live) P.live.met = P.live.met.filter(o => o !== e.other);
-  }
-  return r;
 }
 
 // position of quad q in a legal list, or -1
@@ -322,4 +313,4 @@ function result(st) {
 }
 
 module.exports = { PAD, GLOBAL, VERBS, V, ARGS, ARG, FIELDS, F, GLOB, G, spec, encode, legal, apply, toTuple, fromTuple, indexOf, result, pidx, ppos,
-  fogCopy, searchApply, publicScores };
+  fogCopy, publicScores };
