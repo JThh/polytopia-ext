@@ -24,6 +24,9 @@ class PlayConfig:
     fast_simulations: int = 4          # budget of the other decisions; their policy targets are not trained on
     max_decisions_per_turn: int = 200  # safety cap; the turn is ended after that many actions
     w_margin: float = 0.25             # outcome = rank utility blended with the score margin (sim.utility)
+    td_lambda: float = 1.0             # value targets: 1 = the final outcome; below 1, TD(lambda) over the seat's own
+                                       # decisions, bootstrapped from the search's value at each later decision
+    reply: bool = False                # end_turn leaves: rivals answer with one bot turn before the value is read
 
 
 @dataclass
@@ -62,6 +65,22 @@ class _Game:
         self.info: dict = {}
 
 
+def td_targets(samples: list[dict], z: float, lam: float) -> list[float]:
+    """Value targets for one seat's positions, in decision order: the lambda-return over its own decisions, with no
+    rewards on the way, the search's value at each later decision as the bootstrap, and the final outcome z at the
+    end. lam = 1 gives z everywhere. Afterstates (no search value) take the target the end_turn decision before them
+    gets and are not a step of their own."""
+    out = [0.0] * len(samples)
+    nxt_t, nxt_v = float(z), None
+    for i in range(len(samples) - 1, -1, -1):
+        s = samples[i]
+        t = nxt_t if nxt_v is None else (1.0 - lam) * nxt_v + lam * nxt_t
+        out[i] = t
+        if len(s["legal"]) and not np.isnan(s["v_search"]):
+            nxt_t, nxt_v = t, float(s["v_search"])
+    return out
+
+
 def _end_turn_index(legal: np.ndarray) -> int:
     idx = np.nonzero(legal[:, 0] == 0)[0]
     return int(idx[0]) if len(idx) else 0
@@ -77,8 +96,10 @@ def play(sim: Sim, specs: list[GameSpec], cfg: PlayConfig, rng: np.random.Genera
 
     def finish(g: _Game, result: dict) -> None:
         util = [utility(result, p, cfg.w_margin) for p in range(result["n"])]
-        for s in g.samples:
-            s["z"] = np.float32(util[s["pid"]])
+        for pid in {s["pid"] for s in g.samples}:
+            seq = [s for s in g.samples if s["pid"] == pid]
+            for s, t in zip(seq, td_targets(seq, util[pid], cfg.td_lambda)):
+                s["z"] = np.float32(t)
         out.append({"result": result, "seats": g.seats,
                     "utility": util, "samples": g.samples, "stats": dict(g.stats), "tag": g.spec.tag, "info": g.info})
         sim.call("close", gid=g.gid)
@@ -87,7 +108,8 @@ def play(sim: Sim, specs: list[GameSpec], cfg: PlayConfig, rng: np.random.Genera
         if not todo:
             return
         sp = todo.pop()
-        r = sim.call("new", seed=sp.seed, sample=sp.sample, settings=sp.settings, seats=sp.seats, plan=sp.plan, max_turns=sp.max_turns)
+        r = sim.call("new", seed=sp.seed, sample=sp.sample, settings=sp.settings, seats=sp.seats, plan=sp.plan, max_turns=sp.max_turns,
+                     reply=cfg.reply)
         g = _Game(sp, r["gid"])
         g.seats = r["seats"]
         g.info = {"settings": {k: r["settings"].get(k) for k in ("size", "mapType", "mode", "turnLimit", "seed")}, "tribes": r["tribes"]}

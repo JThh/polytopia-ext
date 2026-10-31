@@ -10,6 +10,7 @@
 //                                                  puts `main` in one seat (-1: a random one, k: seat k mod players)
 //                                                  and `others` everywhere else, once the player count is known.
 //                                                  -> {gid, settings, seats, tribes, status, root?}
+//    optional "reply": true: in searches, end_turn leaves are read after the rivals answer (see rivalsReply)
 //   {"op":"bots", "gid"}                           bot seats play until a net seat is to move or the game ends -> {status}
 //   {"op":"obs", "gid"}                            observation + legal actions of the player to move -> {obs, legal}
 //   {"op":"root", "gid", "seed"}                   start a search at the current state -> {h, obs, legal}
@@ -65,7 +66,7 @@ function makeRoot(g, seed) {
   const view = Uint8Array.from(st.players[pid].explored);
   const legal = C.legal(st, pid, { view });
   const h = nextH++;
-  nodes.set(h, { st: C.fogCopy(st, pid, view), pid, view, legal, ended: false, seed: seed == null ? 1 : seed | 0 });
+  nodes.set(h, { st: C.fogCopy(st, pid, view), pid, view, legal, ended: false, reply: g.reply, seed: seed == null ? 1 : seed | 0 });
   return { h, pid, turn: st.turn, obs: obsOut(C.encode(st, pid, { view })), legal: b64(legal) };
 }
 function act(g, q, seed) {
@@ -102,7 +103,7 @@ const ops = {
     if (m.seed != null) TT.ML.seedRandom(m.seed ^ 0x2f6b);
     const st = TT.newGame(Object.assign({}, settings, { humans, spectate: false }));
     st.players.forEach((P, i) => { if (P.isAI) P.difficulty = seats[i].split(':')[1] || 'hard'; });
-    const g = { st, seats, maxTurns: m.max_turns || (settings.mode === 'score' ? (settings.turnLimit || 30) + 1 : 50) };
+    const g = { st, seats, reply: !!m.reply, maxTurns: m.max_turns || (settings.mode === 'score' ? (settings.turnLimit || 30) + 1 : 50) };
     const gid = nextGid++;
     games.set(gid, g);
     const s = m.no_bots ? status(g) : runBots(g);
@@ -129,12 +130,40 @@ const ops = {
   close(m) { return { closed: games.delete(m.gid) }; },
 };
 
+// An end_turn leaf read after the rivals answer: the player's turn ends, every rival plays one turn with the built-in
+// bot, and the leaf is the start of the player's next turn. Rivals play only with what the player knows of them: the
+// fog copy has no hidden units, and their cities on unexplored tiles become villages here (the scoreboard keeps their
+// points through the offsets).
+function rivalsReply(p, rng) {
+  const st = TT.ML.clone(p.st), pid = p.pid, W = st.W;
+  const before = st.players.map(Q => Q.alive ? TT.score(st, Q.id) : 0);
+  for (const k of st.cities) if (k.owner >= 0 && k.owner !== pid && !p.view[k.y * W + k.x]) { k.owner = -1; k.capital = false; }
+  TT.bump(st);
+  st.fog.offsets = st.fog.offsets.map((o, q) => o + (st.players[q].alive ? before[q] - TT.score(st, q) : 0));
+  st.rng = rng;
+  TT.endTurn(st);
+  let guard = 0;
+  while (!st.over && st.current !== pid && guard++ < 12) {
+    TT.ML.botTurn(st);
+    if (!st.over) TT.endTurn(st);
+  }
+  return st;
+}
+
 function expand(jobs) {
   const out = [];
   for (const [h, a] of jobs) {
     const p = getNode(h), q = p.legal.subarray(4 * a, 4 * a + 4);
     if (q.length !== 4) throw new Error('no action ' + a + ' at node ' + h);
     const ch = nextH++;
+    if (q[0] === C.V.end_turn && p.reply) {
+      const st = rivalsReply(p, mix(p.seed, ch)), done = !!st.over || !st.players[p.pid].alive;
+      nodes.set(ch, { st, pid: p.pid, view: p.view, legal: new Int16Array(0), ended: true, seed: p.seed });
+      const node = { h: ch, obs: obsOut(C.encode(st, p.pid, { view: p.view })), legal: '', ended: true, over: done };
+      if (done) node.result = C.result(st);
+      out.push(node);
+      continue;
+    }
     if (q[0] === C.V.end_turn) {
       nodes.set(ch, { st: p.st, pid: p.pid, view: p.view, legal: new Int16Array(0), ended: true, seed: p.seed });
       out.push({ h: ch, obs: obsOut(C.encode(p.st, p.pid, { view: p.view, ended: true })), legal: '', ended: true, over: false });
@@ -146,7 +175,7 @@ function expand(jobs) {
     if (!r.ok) throw new Error('illegal action in search: ' + JSON.stringify(r.tuple) + ' ' + r.err);
     const done = !!st.over;
     const legal = done ? new Int16Array(0) : C.legal(st, p.pid, { view: p.view });
-    nodes.set(ch, { st, pid: p.pid, view: p.view, legal, ended: false, seed: p.seed });
+    nodes.set(ch, { st, pid: p.pid, view: p.view, legal, ended: false, reply: p.reply, seed: p.seed });
     const node = { h: ch, obs: obsOut(C.encode(st, p.pid, { view: p.view })), legal: b64(legal), ended: false, over: done };
     if (done) node.result = C.result(st);
     out.push(node);

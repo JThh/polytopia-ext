@@ -196,6 +196,14 @@ async function serverGame() {
   }
   check(result && result.n === 2 && result.ranks.length === 2, 'the game finishes with a result (' + rounds + ' actions)');
   check(live === 0, 'all search handles freed (' + live + ' left)');
+  // rival-reply leaves: end_turn in a search is read at the start of the player's next turn, after the rivals' bot turns
+  const r = await call('new', { seed: 9, reply: true, sample: { sizes: { tiny: 1 }, players: [2, 2], modes: { score: 1 }, turnLimits: [10] }, plan: { main: 'net:a', main_seat: 0, others: 'bot:crazy' } });
+  const turnOf = o => Math.round(new Float32Array(Uint8Array.from(Buffer.from(o.glob, 'base64')).buffer)[0] * 30);
+  const ex = await call('step', { jobs: [[r.root.h, 0]] });
+  const leaf = ex.nodes[0];
+  check(ex.ok && leaf.ended && turnOf(leaf.obs) === turnOf(r.root.obs) + 1, 'a reply leaf is the start of the next turn (turn ' + turnOf(r.root.obs) + ' -> ' + turnOf(leaf.obs) + ')');
+  const again = await call('step', { free: [r.root.h, leaf.h], jobs: [] });
+  check(again.ok && again.live === 0, 'reply leaves are freed like any other');
   child.stdin.end();
 }
 

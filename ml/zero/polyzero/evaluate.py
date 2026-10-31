@@ -46,6 +46,7 @@ class EvalConfig:
     seed: int = 20_000
     out: str | None = None
     rules: str = "polytopia_live"
+    label: str | None = None           # stored with the report, to tell evaluations apart
 
 
 def wilson(k: int, n: int, z: float = 1.96) -> tuple[float, float]:
@@ -90,7 +91,12 @@ def summarize(results: list[dict]) -> dict:
         row["simulations"] += r["stats"].get("simulations", 0)
         row["turns"] += r["stats"].get("turns", 0)
         paired.setdefault((t["suite"], t["game"]), {})[t["who"]] = r["utility"][seat]
-    report = {"suites": {}}
+    report = {"suites": {}, "games": []}
+    for r in results:  # per game, so two evaluations of the same seeds can be compared game by game
+        t, res = r["tag"], r["result"]
+        seat = t["game"] % res["n"]
+        report["games"].append({"suite": t["suite"], "game": t["game"], "who": t["who"], "utility": r["utility"][seat],
+                                "win": int(res["winner"] == seat), "score": res["scores"][seat], "share": res["scores"][seat] / max(1, sum(res["scores"]))})
     for (suite, who), row in sorted(rows.items()):
         n = row["games"]
         lo, hi = wilson(row["wins"], n)
@@ -132,6 +138,7 @@ def evaluate(cfg: EvalConfig, pool: Pool | None = None) -> dict:
     report = summarize(results)
     report["seconds"] = time.time() - t0
     report["weights"] = cfg.weights
+    report["label"] = cfg.label
     if cfg.out:
         Path(cfg.out).parent.mkdir(parents=True, exist_ok=True)
         with open(cfg.out, "a") as f:
