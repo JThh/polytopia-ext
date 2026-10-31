@@ -91,6 +91,77 @@ const N = Number(process.argv[2] || 8);
   }
 }
 
+// ---- search positions hold no hidden information: the fog copy a search starts from, and every search child of it,
+// is the same whatever hides under the fog. The test hides rival units where they block one of my moves on the true
+// board (on a fog tile my unit could reach, or next to its path), and adds or removes ruins in the fog.
+{
+  const eq = (a, b) => Buffer.compare(Buffer.from(a.buffer, a.byteOffset, a.byteLength), Buffer.from(b.buffer, b.byteOffset, b.byteLength)) === 0;
+  const sameObs = (a, b) => eq(a.tiles, b.tiles) && eq(a.glob, b.glob);
+  const MET = C.GLOB.indexOf('met');
+  let positions = 0, blocking = 0, children = 0, same = 0, unmet = 0;
+  for (let g = 0; g < N + 4; g++) {
+    const { settings, difficulties } = configs.sample(700 + g, { sizes: { tiny: 1, small: 2 }, players: [2, 4] });
+    TT.ML.seedRandom(g);
+    const st = TT.newGame(Object.assign({}, settings, { humans: [] }));
+    st.players.forEach((P, i) => { P.difficulty = difficulties[i]; });
+    while (!st.over && st.turn <= 18) {
+      const pid = st.current, W = st.W, view = Uint8Array.from(st.players[pid].explored);
+      const land = i => !TT.isWater(st.tiles[i].t) && st.tiles[i].site < 0;
+      // fog tiles where a hidden unit would change my legal moves: reachable ones first, then their neighbours
+      const spots = [];
+      for (const m of st.units) {
+        if (m.owner !== pid || !m.canMove) continue;
+        for (const i of TT.moveTargets(st, m)) {
+          if (!view[i] && land(i)) spots.push(i);
+          for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) {
+            const x = i % W + dx, y = ((i / W) | 0) + dy, j = y * W + x;
+            if (TT.inB(st, x, y) && !view[j] && land(j) && !TT.unitAt(st, x, y)) spots.push(j);
+          }
+        }
+      }
+      const hidden = st.units.filter(u => u.owner !== pid && !u.naval && (!view[u.y * W + u.x] || !TT.visibleTo(st, u, pid)));
+      if (st.turn > 2 && spots.length && hidden.length) {
+        positions++;
+        const alt = TT.ML.clone(st), used = new Set();
+        for (const h of hidden) {
+          const i = spots.find(j => !used.has(j) && !TT.unitAt(alt, j % W, (j / W) | 0));
+          if (i == null) break;
+          used.add(i);
+          const u = TT.getUnit(alt, h.id);
+          u.x = i % W; u.y = (i / W) | 0;
+          TT.bump(alt);
+        }
+        for (let i = 0; i < alt.tiles.length; i += 7) if (!view[i] && land(i)) alt.tiles[i].ruin = !alt.tiles[i].ruin;
+        const real = C.legal(st, pid, { view });
+        if (!eq(real, C.legal(alt, pid, { view }))) blocking++; // the true board's legal moves did change
+        const A0 = C.fogCopy(st, pid, view), B0 = C.fogCopy(alt, pid, view), oA = C.encode(A0, pid, { view });
+        check(sameObs(C.encode(st, pid, { view }), oA), 'a fog copy is observed exactly as the real position');
+        check(sameObs(oA, C.encode(B0, pid, { view })) && eq(C.legal(A0, pid, { view }), C.legal(B0, pid, { view })), 'fog copies agree whatever is under the fog');
+        for (let i = 0; i < real.length; i += 4) {
+          const q = Array.from(real.subarray(i, i + 4));
+          if (q[0] === C.V.end_turn) continue;
+          const a = TT.ML.clone(A0), b = TT.ML.clone(B0);
+          a.rng = b.rng = 12345;
+          const ra = C.searchApply(a, pid, q), rb = C.searchApply(b, pid, q);
+          check(ra.ok && rb.ok, 'a real legal action also plays on the fog copy: ' + JSON.stringify(ra.tuple));
+          const ca = C.encode(a, pid, { view });
+          children++;
+          if (sameObs(ca, C.encode(b, pid, { view })) && eq(C.legal(a, pid, { view }), C.legal(b, pid, { view }))) same++;
+          else console.log('FAIL search child depends on the fog:', JSON.stringify(ra.tuple));
+          if (ca.glob[MET] === oA.glob[MET]) unmet++;
+        }
+      }
+      TT.ML.botTurn(st);
+      if (!st.over) TT.endTurn(st);
+    }
+  }
+  check(blocking >= 2, 'hidden units changed the true legal moves in enough positions (' + blocking + ' of ' + positions + ')');
+  check(same === children, 'search children are the same whatever hides under the fog (' + same + '/' + children + ')');
+  check(unmet === children, 'no tribe is met inside a search (' + unmet + '/' + children + ')');
+  console.log('fog: ' + positions + ' positions with hidden units placed in my way (' + blocking + ' change the true legal moves), ' +
+    children + ' search children compared');
+}
+
 // ---- server: a whole game through new / step (random legal actions) with every search handle freed
 async function serverGame() {
   const child = spawn(process.execPath, [path.join(__dirname, '..', 'sim', 'server.js')], { env: process.env, stdio: ['pipe', 'pipe', 'inherit'] });

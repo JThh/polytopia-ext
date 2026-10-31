@@ -2,7 +2,9 @@
 //
 //   encode(st, pid, opts)  -> { tiles: Uint8Array(PAD*PAD*F), glob: Float32Array(G) }   fog of war applied
 //   legal(st, pid, opts)   -> Int16Array(4 * n): one quad (verb, src, dst, arg) per legal atomic action
-//   apply(st, pid, quad)   -> { ok, err, end, tuple }   runs the action through the shared tuple executor
+//   apply(st, pid, quad)   -> { ok, err, end, tuple, evs }   runs the action through the shared tuple executor
+//   fogCopy(st, pid, view) -> the position as `pid` can know it: where every search starts (see below)
+//   searchApply(st, pid, q) -> apply() inside a search, with discoveries that cannot be foreseen held back
 //
 // A turn is a sequence of atomic actions (one engine call each) closed by end_turn, so the search can branch on
 // every single decision. Quads are position based (no unit or city ids), so the same quad means the same action on
@@ -12,9 +14,13 @@
 // Every quad is also a tuple of the language-model pipeline (ml/sim/actions.js: "giant#12", "move", (5, 7)), so a
 // trained PolyZero agent can drive the same PolyCommand bridge.
 //
-// Fog of war: encode() and legal() show only what `view` (default: the player's explored tiles) covers. During a
-// search the view is frozen at the root, so trying a move cannot reveal what lies behind the fog before the move is
-// actually played.
+// Fog of war: encode() and legal() show only what `view` (default: the player's explored tiles) covers. A search
+// never runs on the real position. It starts from fogCopy(), which holds only what the player can know: units it
+// cannot see are off the board (their score stays on the public scoreboard through a per-player offset), and ruins
+// and resources under the fog are gone. The view is frozen at the root, and searchApply() holds back the stars for
+// meeting a tribe, which no one can foresee. So a search cannot learn about the fog by trying moves: a simulated move
+// is never blocked by a hidden unit or its zone of control, never finds hidden ruins or starfish, and never meets a
+// tribe. The real game's legal moves still follow the true board, as the game does.
 //
 // Rulesets: polytopia (classic) and polytopia_live (2.17.3: cloaks, embassies, rafts, starfish, bridges, monuments).
 // Vocabularies are read from the loaded ruleset, so a network belongs to the ruleset it was trained on.
@@ -128,7 +134,7 @@ function encode(st, pid, opts) {
   const g = new Float32Array(G), S = st.settings;
   let k = 0;
   const put = v => { g[k++] = v; };
-  const scores = st.players.map(Q => Q.alive ? TT.score(st, Q.id) : 0), me = scores[pid];
+  const scores = publicScores(st), me = scores[pid];
   put(st.turn / 30);
   put(S.mode === 'score' ? Math.max(0, S.turnLimit - st.turn + 1) / 30 : 0);
   put(S.mode === 'score' ? 1 : 0); put(S.mode === 'score' ? 0 : 1);
@@ -178,7 +184,7 @@ function legal(st, pid, opts) {
   for (const u of mine) {
     const p = u.y * PAD + u.x, S = TT.stats(st, u), tl = st.tiles[u.y * W + u.x];
     if (TT.canCapture(st, u)) push(V.capture, p, p, 0);
-    if (V.examine != null && tl.ruin && !!u.naval === TT.isWater(tl.t)) push(V.examine, p, p, 0); // boats examine water ruins (live)
+    if (V.examine != null && tl.ruin && view[u.y * W + u.x] && !!u.naval === TT.isWater(tl.t)) push(V.examine, p, p, 0); // boats: water ruins (live)
     if (u.canMove && u.canAttack && u.hp < S.maxHp) push(V.recover, p, p, 0);
     if (V.heal != null && u.canMove && u.canAttack && TT.has(S, 'heal') && TT.healTargets(st, u).length) push(V.heal, p, p, 0);
     if (P.techs.free_spirit || TT.RULESET.name === 'tessera') push(V.disband, p, p, 0);
@@ -201,7 +207,7 @@ function legal(st, pid, opts) {
   }
   const unitTiles = new Set(mine.map(u => u.y * W + u.x)); // starfish (live) are fished wherever my unit stands
   for (let i = 0; i < st.tiles.length; i++) {
-    if (st.tiles[i].owner !== pid && !unitTiles.has(i)) continue;
+    if ((st.tiles[i].owner !== pid && !unitTiles.has(i)) || !view[i]) continue;
     const x = i % W, y = (i / W) | 0;
     for (const k of TT.buildOptions(st, pid, x, y)) if (TT.canBuild(st, pid, x, y, k)) push(V.build, y * PAD + x, y * PAD + x, ARG['build:' + k]);
   }
@@ -257,7 +263,44 @@ function apply(st, pid, q) {
   const t = toTuple(st, q);
   if (!t) return { ok: false, err: 'bad_quad', end: false, tuple: null };
   const r = A.execute(st, pid, t);
-  return { ok: r.ok, err: r.err, end: r.end, tuple: t };
+  return { ok: r.ok, err: r.err, end: r.end, tuple: t, evs: r.evs };
+}
+
+// ---------------------------------------------------------------- search positions
+// Scores as the public scoreboard shows them: on a fog copy, plus the points of the units taken off the board.
+function publicScores(st) {
+  const off = st.fog ? st.fog.offsets : null;
+  return st.players.map(Q => Q.alive ? TT.score(st, Q.id) + (off ? off[Q.id] : 0) : 0);
+}
+
+// The position as `pid` can know it, given its explored tiles `view`. Rivals' units it cannot see (under the fog, or
+// cloaked) are removed; ruins and resources on unexplored tiles are cleared. Its observation is the same as the real
+// position's, and it is the same whatever hides under the fog.
+function fogCopy(st, pid, view) {
+  const c = TT.ML.clone(st), W = c.W;
+  const before = c.players.map(P => P.alive ? TT.score(c, P.id) : 0);
+  c.units = c.units.filter(u => u.owner === pid || (view[u.y * W + u.x] && TT.visibleTo(c, u, pid)));
+  for (let i = 0; i < c.tiles.length; i++) {
+    if (view[i]) continue;
+    const t = c.tiles[i];
+    t.ruin = false;
+    if (!t.imp) t.res = null;
+  }
+  TT.bump(c);
+  c.fog = { pid, offsets: c.players.map((P, q) => P.alive ? before[q] - TT.score(c, q) : 0) };
+  return c;
+}
+
+// apply() on a search position. Meeting a tribe (live rules pay stars for it) is undone: whether a move uncovers a
+// rival cannot be known before the move is played, so the search must not be paid for guessing right.
+function searchApply(st, pid, q) {
+  const r = apply(st, pid, q), P = st.players[pid];
+  for (const e of r.evs || []) {
+    if (e.type !== 'meet' || e.pid !== pid) continue;
+    P.stars -= e.stars;
+    if (P.live) P.live.met = P.live.met.filter(o => o !== e.other);
+  }
+  return r;
 }
 
 // position of quad q in a legal list, or -1
@@ -271,11 +314,12 @@ function indexOf(list, q) {
 // else ranks by score behind it. Games stopped by a turn cap rank by score.
 function result(st) {
   const n = st.players.length;
-  const scores = st.players.map(P => P.alive ? TT.score(st, P.id) : 0);
+  const scores = publicScores(st);
   const winner = st.over ? st.over.winner : scores.indexOf(Math.max.apply(null, scores));
   const ranks = scores.map((s, i) => i === winner ? 1 : 2 + scores.filter((o, j) => j !== winner && j !== i && o > s).length);
   return { over: !!st.over, reason: st.over ? st.over.reason : 'turn_cap', turn: st.turn, winner, scores, ranks,
     alive: st.players.map(P => P.alive), tribes: st.players.map(P => P.tribe), n };
 }
 
-module.exports = { PAD, GLOBAL, VERBS, V, ARGS, ARG, FIELDS, F, GLOB, G, spec, encode, legal, apply, toTuple, fromTuple, indexOf, result, pidx, ppos };
+module.exports = { PAD, GLOBAL, VERBS, V, ARGS, ARG, FIELDS, F, GLOB, G, spec, encode, legal, apply, toTuple, fromTuple, indexOf, result, pidx, ppos,
+  fogCopy, searchApply, publicScores };

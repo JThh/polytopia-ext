@@ -76,7 +76,7 @@ Plain AlphaZero does not fit Polytopia out of the box. Each difficulty below has
 | A turn is 5 to 50 actions, so whole turns are far too many to enumerate | Search over **atomic actions**: one move, attack, build or research per tree edge, end_turn included |
 | 2 to 6 players, and rivals move between my turns | The tree covers **my own turn**; the end_turn leaf is an **afterstate** the value net scores, so rivals' replies are folded into the value. Rivals are real opponents during self-play: bots, past selves, or the net itself |
 | Branching is large: 46 legal actions on average in bot games, 250+ late in big games | **Gumbel root search** (Danihelka et al., 2022): sample k candidates without replacement, then sequential halving. Policy improvement is guaranteed even with 8 to 32 simulations, where PUCT is not |
-| Fog of war | The network only sees the player's view. The search **freezes the view at the root**: trying a move cannot reveal what is behind the fog, and attacks need a target that was visible at the root |
+| Fog of war | The network only sees the player's view. The search runs on a **fog copy** that holds only what the player can know, with the view frozen at the root and no rewards for meeting a tribe, so trying moves cannot uncover anything (see [Fog of war](#fog-of-war)) |
 | Chance (ruins, explorer rewards) | Every search state gets a **fresh random seed**, so the search samples outcomes instead of reading the real game's seed |
 | Long games with sparse outcomes (300 to 1,000 decisions per player) | A **warm start** from the built-in bots; **playout-cap randomisation** (a quarter of the decisions get the full search and become policy targets, the rest are cheap); a **curriculum** from tiny 1v1 maps to full games |
 | Over-fitting to one opponent | A **league**: each self-play game is against the current net, crazy, hard, or a snapshot of an earlier net |
@@ -148,6 +148,32 @@ What the network gets, all from the acting player's point of view after fog of w
 
 The same information is in the PolyState JSON a real-game bridge already produces (`ml/bridge/README.md`), apart from
 each unit's separate can-move / can-attack flags.
+
+### Fog of war
+
+The network sees only the player's explored tiles. The search must not learn more by trying moves, so it never runs
+on the real position (`core.fogCopy`, `core.searchApply`):
+
+- It starts from a **fog copy**. Rival units the player cannot see (under the fog, or cloaked) are taken off the
+  board, and ruins and resources on unexplored tiles are cleared. Rival scores stay as the public scoreboard shows
+  them. A simulated move can never be blocked by a hidden unit or its zone of control, or find hidden ruins or
+  starfish.
+- The view stays **frozen at the root**: tiles a simulated move would reveal stay hidden, and attacks need a target
+  that was visible at the root.
+- **Meeting a tribe pays nothing** inside a search (the live rules pay stars for it): no one can know before moving
+  whether a move uncovers a rival.
+- Every search state gets a **fresh random seed**, so ruins and explorer rewards are sampled, not read from the real
+  game's seed.
+
+`test/core.js` hides rival units where they would block one of the player's moves, adds and removes ruins under the
+fog, and checks that the fog copy and every search child are byte-identical either way. With hidden units left on
+the fog copy, that test fails.
+
+Over 1,026 live-rules turn starts from bot games, before this: 7.2% had a move whose search child gave away something
+hidden, mostly the stars for meeting a tribe. After: 0%. Two things remain, both fair. A move that uncovers a
+lighthouse still adds population in the search, but lighthouses sit in the four corners, so that is predictable.
+The real game's legal moves follow the true board, as the game itself does: a hidden unit removes a move target in
+0.6% of positions.
 
 ## The network
 
@@ -391,6 +417,9 @@ PolyCommand bridge of `ml/bridge/README.md`. What remains:
   units it could not have seen.
 - **Value targets.** z only (default) or mixed with the root search value (`optim.value_mix`). A TD(λ) target over
   the player's own turns is the next thing to try if the value stays noisy.
+- **The bots see terrain under the fog.** The built-in bots plan paths over the true terrain, unexplored tiles
+  included, and the warm start imitates them. That does not leak into PolyZero's search, but part of the bots'
+  strength comes from map knowledge PolyZero does not have.
 - **Score-mode versus domination play.** The utility treats them alike, and the curriculum mixes them late. Separate
   evaluation suites will show whether that needs per-mode weighting.
 - **Distillation to the language model.** Searched turns (π′ sequences) as SFT targets for `ml/polyrl`.
@@ -405,7 +434,7 @@ PolyCommand bridge of `ml/bridge/README.md`. What remains:
 
 | Path | |
 | --- | --- |
-| `sim/core.js` | observation bytes, exhaustive atomic legal actions, quads ↔ tuples, apply, outcome |
+| `sim/core.js` | observation bytes, exhaustive atomic legal actions, quads ↔ tuples, apply, fog copies for search, outcome |
 | `sim/server.js` | JSON-lines server: games, search states by handle, batched `step` (free + act + expand) |
 | `sim/gen_bc.js` | warm-start data from bot games (binary shards) |
 | `polyzero/net.py` | PolyNet, batching with crops, device choice, save/load |
@@ -423,6 +452,6 @@ PolyCommand bridge of `ml/bridge/README.md`. What remains:
 ## Tests
 
 ```bash
-npm run test:zero                  # Node, live and classic rules: action-space coverage, legality, fog, server (~6 s)
+npm run test:zero                  # Node, live and classic rules: action-space coverage, legality, fog, server (~20 s)
 cd ml/zero && python -m pytest     # search on toy trees + end-to-end CPU pipeline with resume (~10 s)
 ```

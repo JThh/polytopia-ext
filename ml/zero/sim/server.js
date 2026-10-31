@@ -25,9 +25,11 @@
 //   {"op":"result", "gid"}  {"op":"close", "gid"}  {"op":"ping"}
 //
 // Arrays travel as base64 little-endian buffers: obs.tiles (uint8, PAD*PAD*F), obs.glob (float32, G), legal (int16,
-// 4 per action). A search never touches the real game: the root shares the game's state read-only, every child is a
-// copy. Children get a fresh random seed, so ruins examined inside a search do not reveal what the real game's seed
-// will give, and the view is frozen at the root (see core.js).
+// 4 per action). A search never touches the real game. Its root holds core.fogCopy() of the position: only what the
+// player can know, with hidden units, ruins and resources removed. Every child is a copy of its parent with a fresh
+// random seed (ruins examined in a search do not reveal what the real game's seed will give), the view stays frozen
+// at the root, and meeting a tribe pays nothing (core.searchApply). The root's legal actions follow the true board,
+// as the real game does, and each of them is also legal on the fog copy, which only has fewer blockers.
 'use strict';
 process.env.POLY_RULES = process.env.POLY_RULES || 'polytopia_live'; // PolyZero plays the live game by default
 const readline = require('readline');
@@ -63,7 +65,7 @@ function makeRoot(g, seed) {
   const view = Uint8Array.from(st.players[pid].explored);
   const legal = C.legal(st, pid, { view });
   const h = nextH++;
-  nodes.set(h, { st, pid, view, legal, ended: false, seed: seed == null ? 1 : seed | 0 });
+  nodes.set(h, { st: C.fogCopy(st, pid, view), pid, view, legal, ended: false, seed: seed == null ? 1 : seed | 0 });
   return { h, pid, turn: st.turn, obs: obsOut(C.encode(st, pid, { view })), legal: b64(legal) };
 }
 function act(g, q, seed) {
@@ -140,7 +142,7 @@ function expand(jobs) {
     }
     const st = TT.ML.clone(p.st);
     st.rng = mix(p.seed, ch);
-    const r = C.apply(st, p.pid, q);
+    const r = C.searchApply(st, p.pid, q);
     if (!r.ok) throw new Error('illegal action in search: ' + JSON.stringify(r.tuple) + ' ' + r.err);
     const done = !!st.over;
     const legal = done ? new Int16Array(0) : C.legal(st, p.pid, { view: p.view });
