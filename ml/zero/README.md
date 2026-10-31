@@ -18,12 +18,15 @@ evaluation (see [Evaluation](#evaluation)).
 
 > **Status.** Everything below runs and is tested on CPU under both rulesets (Node tests plus pytest, including an
 > end-to-end run: bot data, warm start, self-play with a league, evaluation and resume). The numbers in
-> [Measured so far](#measured-so-far) come from a 4-core Linux VM in one session, about 3 CPU-hours of training:
+> [Measured so far](#measured-so-far) come from a 4-core Linux VM in one session, about 8 CPU-hours of training
+> and evaluation:
 > - Classic rules: the first self-play run collapsed. With the fixes in
 >   [Stabilising self-play](#stabilising-self-play), 10 iterations took the net from 2 to 10% to 14.6% wins
 >   against crazy, level with the hard bot.
-> - Live rules: 20 iterations did not improve on the warm start ([Live rules](#live-rules) says why and what
->   changed).
+> - Live rules: the first recipe made the policy worse. A sweep and four training runs
+>   ([What works](#what-works-experiments-on-the-live-rules)) found a recipe that improves it: 32-simulation
+>   searches, value estimates trusted less (c_scale 0.3), TD(0.9) value targets. Against the hard bot, wins went
+>   from 12.5% to 27.1%, level with the normal bot at the same income. Against crazy there is no clear gain yet.
 >
 > Crazy is not beaten yet: that takes the long training run this document proposes. No trained weights are
 > included.
@@ -213,12 +216,17 @@ policy: for each legal (verb, src, dst, arg):  logit = MLP( Ws·h[src] + Wd·h[d
 - **Leaves.** The value net scores the position. An `end_turn` child is the afterstate: same position, `ended` flag
   set, no unit able to act. A finished game gets its exact outcome. There are no intermediate rewards and no
   discounting: every value is the expected final outcome in [−1, 1].
-- **σ.** σ(q) = (c_visit + max N) · c_scale · (q + 1)/2, with c_visit 50 and c_scale 1. Values are mapped by their
-  known bounds. The usual per-node min-max rescaling (mctx's default, `rescale: true`) turned tiny, noisy Q gaps
+- **σ.** σ(q) = (c_visit + max N) · c_scale · (q + 1)/2, with c_visit 50 and c_scale 0.3. Values are mapped by
+  their known bounds. c_scale sets how far Q-values may move the prior: at 1.0, early noisy Q-gaps rewrote a quarter
+  of the policy's favourite moves and self-play got worse (see [What works](#what-works-experiments-on-the-live-rules)).
+  The usual per-node min-max rescaling (mctx's default, `rescale: true`) turned tiny, noisy Q gaps
   into ±5-logit swings with an early value net, and played far worse (see below).
 - **Leaf blend** (`heuristic`, training only, annealed to 0): leaf value = (1 − λ) · value net + λ · score margin
   (the same squashed margin as the outcome, read from the observation). Early on, this gives the search real credit
   for actions that gain score: research, training, captures, growth, exploration.
+- **Rival replies** (`play.reply`, off by default): an end_turn leaf is read at the start of the player's next
+  turn, after every rival has played one bot turn on the fog copy. It raised score share in the sweep but not
+  outcomes, at about 40% more cost per search.
 - **Policy target**: π′ at the root.
 - **Budgets**: `full_prob` 0.25 of decisions get the full budget and become policy targets. The rest get
   `fast_simulations` (4) and only contribute value targets. Evaluation always searches fully and deterministically
@@ -244,8 +252,10 @@ Each iteration:
    the league: `self` (every seat is the current net, all recorded), a bot (`bot:normal`, `bot:hard`,
    `bot:crazy`), or `past` (a recent snapshot). Each curriculum stage can set its own mix: crazy joins once the net
    can sometimes win. The learner's seat is random.
-2. Every decision of a learner seat becomes a position: the improved policy π′ (full searches only), the game's
-   outcome for that seat, and, at each end_turn, the afterstate.
+2. Every decision of a learner seat becomes a position: the improved policy π′ (full searches only), a value
+   target, and, at each end_turn, the afterstate. The value target is TD(λ = 0.9) over the seat's own decisions
+   (`play.td_lambda`): mostly the search's value a few decisions later, across the rivals' replies, and only partly
+   the final outcome.
 3. The learner takes `replay_ratio × new positions / batch_size` AdamW steps on a FIFO replay buffer (150k). Loss
    is policy cross-entropy plus value MSE. It saves weights atomically (workers reload on change), snapshots into
    the league every 5 iterations, and runs the paired evaluation every 10.
@@ -411,12 +421,54 @@ from:
 | iteration 30 | none | 0.17 | 0.19 |
 | iteration 30 | 16 simulations | 0.15 | 0.15 |
 
-The search plays worse than the warm-start prior it starts from, so its targets teach the policy worse moves. The value
-head is trained only on final outcomes, which all positions of a game share. It gets no signal about which of two
-moves in the same turn was better, and at 3,000 to 4,000 positions an iteration it cannot learn that from outcomes
-alone. Until the evaluator can rank actions within a turn, more self-play only distills its noise. The next change
-is therefore the value target, not more compute: TD(λ) targets over the player's own decisions, so each position
-learns from the search's estimate a few decisions and one rival turn later, and only partly from the final outcome.
+Score share alone suggests the search plays worse than the prior. On wins and utility it does not (next section): what
+made the policy worse was how the search was distilled into it, with Q-values trusted too much (c_scale 1.0) and
+values learned from final outcomes only.
+
+### What works: experiments on the live rules
+
+Paired evaluations on the same seeds: tiny 1v1 maps, 20 turns, 96 games against each opponent (48 in the sweep).
+Numbers are utility differences, ± standard error, against the warm start's policy without search. On these games,
+bots in our seat win against crazy / against hard: crazy 43.8% / 78.1%, hard 14.6% / 42.7%, normal (human income,
+like PolyZero) 9.4% / 27.1%.
+
+**1. Search on the warm start.** Every search setting beat the policy alone; 32 simulations most. Rival replies
+raised score share (up to +0.08) without clearly better outcomes, at about 40% more cost.
+
+| search | vs crazy | vs hard |
+| --- | --- | --- |
+| 32 simulations, c_scale 0.3, blend 0.5 | +0.10 ± 0.06 | +0.11 ± 0.11 |
+| 16 simulations + rival replies | +0.03 ± 0.04 | +0.11 ± 0.11 |
+| 32 simulations + rival replies | +0.07 ± 0.05 | +0.06 ± 0.10 |
+| 16 simulations + rival replies, value net only | +0.02 ± 0.06 | +0.14 ± 0.11 |
+
+**2. Self-play recipes**, 30 iterations each from the same warm start, value-only for the first 10. Policy without
+search:
+
+| recipe | it 10 | it 20 | it 30 |
+| --- | --- | --- | --- |
+| old: c_scale 1.0, 16 simulations, outcome values (vs crazy / vs hard) | +0.01 / +0.13 | −0.04 / −0.06 | −0.13 / −0.12 |
+| new: c_scale 0.3, 32 simulations, TD(0.9) values | −0.02 / +0.06 | −0.05 / −0.07 | −0.02 / **+0.23 ± 0.09** |
+
+With c_scale 1.0 the search targets changed the policy's favourite move in 26% of positions (KL to the prior 0.23)
+and pushed it towards research, which earns score at once through the leaf blend. At 0.3 they change it in 12%
+(KL 0.05), and the policy improves instead of eroding. With search on top, the new run's iteration 30 wins 27.1%
+against hard (warm start with the same search: 12.5%; utility +0.34 ± 0.08), level with the normal bot, and 7.3%
+against crazy (+0.03 ± 0.05).
+
+**3. Longer.** The new recipe from iteration 30 to 60 on the same tiny duels: +0.03 / +0.03 (it 40),
++0.08 / +0.11 (it 50), +0.00 / +0.26 (it 60), and +0.07 / +0.17 with search at 60. A plateau around the normal bot
+at this scale.
+
+**4. More imitation instead.** Two more warm-start epochs (validation hit rate 0.66 → 0.68): +0.02 / +0.07 without
+search, −0.04 / +0.05 with search. Self-play with the new recipe beats imitating the bots for longer.
+
+**What works best so far**, and is now the default: c_scale 0.3, 32-simulation full searches (64 on the GPU
+recipe), TD(0.9) value targets, with the leaf blend, anchor, value warm-up and a league that starts against
+beatable opponents. It turns self-play from harmful into helpful against hard. Against crazy, whose +3 stars a turn
+the network has to make up for, nothing measured here moves the needle beyond noise. The next steps need more than
+this VM: more games per iteration and longer runs (the gains against hard came in steps of about 10 iterations),
+crazy in the league once the network wins against hard, and the bigger network of the GPU recipe.
 
 ## Compute plan
 
@@ -452,8 +504,8 @@ PolyCommand bridge of `ml/bridge/README.md`. What remains:
   cheap extension is to let the built-in bot play the rivals' turns from each end_turn leaf and score the start of
   my next turn. That needs the hidden part of the board determinised first, or the search learns from rivals'
   units it could not have seen.
-- **Value targets.** z only (default) or mixed with the root search value (`optim.value_mix`). A TD(λ) target over
-  the player's own turns is the next thing to try if the value stays noisy.
+- **Value targets.** TD(0.9) over the player's own decisions is the default now. Its λ, and a value target that
+  also learns from the rivals' replies directly (`play.reply`), have not been tuned yet.
 - **The bots see terrain under the fog.** The built-in bots plan paths over the true terrain, unexplored tiles
   included, and the warm start imitates them. That does not leak into PolyZero's search, but part of the bots'
   strength comes from map knowledge PolyZero does not have.
