@@ -386,6 +386,38 @@ TD(λ) value targets over the player's own turns, and the longer games where liv
 growing temples, embassies) pay off. All but TD(λ) are config changes.
 
 
+### Live run with the fog-correct search
+
+After the search was restricted to what the player can know (see [Fog of war](#fog-of-war)), the MacBook recipe ran
+for 30 iterations on the 4-core VM (about 30 minutes), from the live warm start: tiny 1v1 maps against self, normal,
+hard and past, value-only for the first 10 iterations. 32 paired games per suite, 16 simulations with the leaf
+blend. In our seat on these games, crazy wins 53% against crazy and 84% against hard; hard wins 22% and 38%;
+normal 12.5% and 22%.
+
+| net | vs crazy: win | score | share | vs hard: win | score | share |
+| --- | --- | --- | --- | --- | --- | --- |
+| warm start | 3.1% | 2118 | 0.22 | 12.5% | 2554 | 0.31 |
+| iteration 10 (value-only so far) | 3.1% | 2302 | 0.24 | 6.2% | 2237 | 0.26 |
+| iteration 20 | 3.1% | 1274 | 0.13 | 3.1% | 1905 | 0.22 |
+| iteration 30 | 3.1% | 1332 | 0.14 | 0% | 1394 | 0.17 |
+
+Once search targets start steering the policy, play gets worse. The same nets without any search show where it comes
+from:
+
+| net | search | vs crazy: share | vs hard: share |
+| --- | --- | --- | --- |
+| warm start | none | 0.28 | 0.33 |
+| warm start | 16 simulations | 0.22 | 0.28 |
+| iteration 30 | none | 0.17 | 0.19 |
+| iteration 30 | 16 simulations | 0.15 | 0.15 |
+
+The search plays worse than the warm-start prior it starts from, so its targets teach the policy worse moves. The value
+head is trained only on final outcomes, which all positions of a game share. It gets no signal about which of two
+moves in the same turn was better, and at 3,000 to 4,000 positions an iteration it cannot learn that from outcomes
+alone. Until the evaluator can rank actions within a turn, more self-play only distills its noise. The next change
+is therefore the value target, not more compute: TD(λ) targets over the player's own decisions, so each position
+learns from the search's estimate a few decisions and one rival turn later, and only partly from the final outcome.
+
 ## Compute plan
 
 A MacBook Air with 8 cores, 6 of them for self-play workers, should make roughly 2 to 3 times this VM's throughput.
