@@ -24,7 +24,7 @@ class PlayConfig:
     fast_simulations: int = 4          # budget of the other decisions; their policy targets are not trained on
     max_decisions_per_turn: int = 200  # safety cap; the turn is ended after that many actions
     w_margin: float = 0.25             # outcome = rank utility blended with the score margin (sim.utility)
-    td_lambda: float = 1.0             # value targets: 1 = the final outcome; below 1, TD(lambda) over the seat's own
+    td_lambda: float = 0.9             # value targets: 1 = the final outcome; below 1, TD(lambda) over the seat's own
                                        # decisions, bootstrapped from the search's value at each later decision
     reply: bool = False                # end_turn leaves: rivals answer with one bot turn before the value is read
 

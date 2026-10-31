@@ -23,8 +23,8 @@ warm_start:
 selfplay:
   games_per_iter: 24
   opponents: {self: 0.3, "bot:crazy": 0.4, "bot:hard": 0.15, past: 0.15}
-  search: {simulations: 16, max_considered: 8}
-  play: {concurrent: 6, full_prob: 0.25, fast_simulations: 4}
+  search: {simulations: 32, max_considered: 8, c_scale: 0.3}
+  play: {concurrent: 6, full_prob: 0.25, fast_simulations: 4, td_lambda: 0.9}
   heuristic: 0.5          # search leaf value blended with the score margin, annealed to 0 ...
   heuristic_anneal: 100   # ... over this many iterations
   policy_warmup: 10       # value-only self-play for the first iterations; the anchor holds the policy

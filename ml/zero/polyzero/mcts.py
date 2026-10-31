@@ -28,7 +28,8 @@ class SearchConfig:
     simulations: int = 16       # budget per decision (full search)
     max_considered: int = 8     # root candidates (Gumbel top-k)
     c_visit: float = 50.0       # sigma(q) = (c_visit + max N) * c_scale * q01, the Gumbel MuZero transform
-    c_scale: float = 1.0
+    c_scale: float = 0.3        # how far Q may move the prior: 1.0 let early, noisy Q-gaps rewrite a quarter of the
+                                # policy's favourite moves, and self-play got worse; 0.3 kept improving (README)
     rescale: bool = False       # q01 = min-max over the node's Q-values (mctx default) instead of (q + 1) / 2. Min-max
                                 # turns any Q gap, however small, into the full range: with an early, noisy value net
                                 # that drowns the prior, so values are mapped by their known bounds [-1, 1] instead
