@@ -29,10 +29,17 @@ def _coerce(t, v):
     return v
 
 
-def _merge(base: dict, over: dict) -> dict:
+def _merge(cls, base: dict, over: dict) -> dict:
+    """Override the fields of dataclass `cls` (as dicts): nested config sections merge, any other value (plain dicts
+    such as an opponent mix, lists, scalars) is replaced whole."""
     out = dict(base)
+    hints = typing.get_type_hints(cls)
     for k, v in over.items():
-        out[k] = _merge(out[k], v) if isinstance(v, dict) and isinstance(out.get(k), dict) else v
+        t = hints.get(k)
+        if t is not None and dataclasses.is_dataclass(t) and isinstance(v, dict) and isinstance(out.get(k), dict):
+            out[k] = _merge(t, out[k], v)
+        else:
+            out[k] = v
     return out
 
 
@@ -57,7 +64,7 @@ def _build(cls, data: dict, where: str):
         t, v = hints[f.name], data[f.name]
         if dataclasses.is_dataclass(t) and isinstance(v, dict):
             d = _default(f)  # a partial override keeps the field's own defaults (e.g. eval.search keeps gumbel_scale=0)
-            kw[f.name] = _build(t, _merge(dataclasses.asdict(d), v) if dataclasses.is_dataclass(d) else v, f"{where}.{f.name}".strip("."))
+            kw[f.name] = _build(t, _merge(t, dataclasses.asdict(d), v) if dataclasses.is_dataclass(d) else v, f"{where}.{f.name}".strip("."))
         else:
             kw[f.name] = _coerce(t, v)
     return cls(**kw)
