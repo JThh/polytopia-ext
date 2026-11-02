@@ -507,6 +507,7 @@ With the 32-simulation search on top:
 | S2, it 30 | +0.25 (26%) | **+0.40 (29%)** | +0.26 (15%) | +0.09 (7%) |
 | S3, it 30 | +0.19 (23%) | +0.19 (19%) | +0.22 (15%) | +0.04 (5%) |
 | S4, it 30 | −0.03 (11%) | +0.01 (8%) | +0.20 (8%) | −0.04 (1%) |
+| R1 (bots in the league), it 30 | +0.33 (30%) | +0.34 (25%) | +0.32 (19%) | +0.10 (8%) |
 
 What this says, with the caveat that each row is one run: S4's first 10 iterations had exactly S2's settings and
 still ended about 0.2 behind it, so run-to-run noise is as large as most of the differences above.
@@ -516,7 +517,9 @@ still ended about 0.2 behind it, so run-to-run noise is as large as most of the 
   40% more positions per iteration than R1 below.
 - **Bots in the league gave a small head start.** R1, the same recipe with half its games against the normal and
   hard bots, was ahead of S2 after 30 iterations on all four suites, by 0.06 to 0.11 on the policy, most against crazy
-  (9% wins against 4%). That is within the run-to-run noise, but every suite points the same way. An S2 attempt
+  (9% wins against 4%). That is within the run-to-run noise, but every suite points the same way. With search on
+  top the gap mostly closes: R1 is ahead on tiny duels and 3-player games, S2 on small maps, and the two are level
+  against crazy. An S2 attempt
   that a config bug left with a third of its games against crazy and hard ended close to S2
   (+0.10 / +0.15 / +0.19 / +0.02), so crazy in the mix did not help. The recipes still leave the bots out: they
   are fixed opponents, and only the net's own snapshots get harder as it does. A stage can put them back with one line (`opponents:` on that
