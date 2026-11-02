@@ -36,12 +36,12 @@ from .play import PlayConfig
 from .sim import Sim
 from .workers import Pool
 
-DEFAULT_CURRICULUM = [  # stages may also set "opponents" (the league mix); otherwise selfplay.opponents applies
-    {"until": 30, "sample": {"sizes": {"tiny": 1}, "players": [2, 2], "modes": {"score": 1}, "turnLimits": [20]},
-     "opponents": {"self": 0.4, "bot:normal": 0.3, "bot:hard": 0.2, "past": 0.1}},
-    {"until": 120, "sample": {"sizes": {"tiny": 1, "small": 2}, "players": [2, 3], "modes": {"score": 1}, "turnLimits": [25, 30]},
-     "opponents": {"self": 0.3, "bot:hard": 0.3, "bot:crazy": 0.2, "past": 0.2}},
-    {"until": None, "sample": {"sizes": {"small": 2, "normal": 2, "large": 1}, "players": [2, 4], "modes": {"score": 4, "domination": 1}, "turnLimits": [30]},
+# One map size for a long stretch, duels first (README, "Pure self-play"). A stage may also set "opponents" (its own
+# league mix, bots included, e.g. {"self": 0.5, "bot:hard": 0.5}); otherwise selfplay.opponents applies.
+DEFAULT_CURRICULUM = [
+    {"until": 150, "sample": {"sizes": {"tiny": 1}, "players": [2, 2], "modes": {"score": 1}, "turnLimits": [20]}},
+    {"until": 300, "sample": {"sizes": {"small": 1}, "players": [2, 2], "modes": {"score": 1}, "turnLimits": [25]}},
+    {"until": None, "sample": {"sizes": {"small": 1, "normal": 2}, "players": [2, 4], "modes": {"score": 4, "domination": 1}, "turnLimits": [30]},
      "max_turns": 40},
 ]
 
@@ -71,7 +71,7 @@ class WarmStartConfig:
 @dataclass
 class SelfPlayConfig:
     games_per_iter: int = 24
-    opponents: dict = field(default_factory=lambda: {"self": 0.3, "bot:crazy": 0.4, "bot:hard": 0.15, "past": 0.15})
+    opponents: dict = field(default_factory=lambda: {"self": 0.7, "past": 0.3})  # pure self-play
     curriculum: list = field(default_factory=lambda: [dict(c) for c in DEFAULT_CURRICULUM])
     search: SearchConfig = field(default_factory=SearchConfig)
     play: PlayConfig = field(default_factory=PlayConfig)

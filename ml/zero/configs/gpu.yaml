@@ -18,7 +18,7 @@ warm_start:
   lr: 2.0e-3
 selfplay:
   games_per_iter: 128
-  opponents: {self: 0.35, "bot:crazy": 0.35, "bot:hard": 0.1, past: 0.2}
+  opponents: {self: 0.7, past: 0.3}
   search: {simulations: 64, max_considered: 16, c_scale: 0.3}
   play: {concurrent: 8, full_prob: 0.25, fast_simulations: 8, td_lambda: 0.9}
   heuristic: 0.5
@@ -27,12 +27,12 @@ selfplay:
   snapshot_every: 5
   league_size: 10
   curriculum:
-    - until: 20
-      sample: {sizes: {tiny: 1, small: 1}, players: [2, 2], modes: {score: 1}, turnLimits: [20, 25]}
-      opponents: {self: 0.4, "bot:normal": 0.3, "bot:hard": 0.2, past: 0.1}
-    - until: 80
-      sample: {sizes: {small: 2, normal: 1}, players: [2, 3], modes: {score: 1}, turnLimits: [25, 30]}
-      opponents: {self: 0.3, "bot:hard": 0.3, "bot:crazy": 0.2, past: 0.2}
+    - until: 100
+      sample: {sizes: {tiny: 1}, players: [2, 2], modes: {score: 1}, turnLimits: [20]}
+    - until: 250
+      sample: {sizes: {small: 1}, players: [2, 2], modes: {score: 1}, turnLimits: [25]}
+    - until: 400
+      sample: {sizes: {normal: 1}, players: [2, 2], modes: {score: 1}, turnLimits: [30]}
     - until: null
       sample: {sizes: {small: 1, normal: 2, large: 2, huge: 1}, players: [2, 6], modes: {score: 3, domination: 1}, turnLimits: [30, 35]}
       max_turns: 45

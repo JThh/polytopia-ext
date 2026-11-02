@@ -27,6 +27,10 @@ evaluation (see [Evaluation](#evaluation)).
 >   ([What works](#what-works-experiments-on-the-live-rules)) found a recipe that improves it: 32-simulation
 >   searches, value estimates trusted less (c_scale 0.3), TD(0.9) value targets. Against the hard bot, wins went
 >   from 12.5% to 27.1%, level with the normal bot at the same income. Against crazy there is no clear gain yet.
+> - Pure self-play ([Pure self-play](#pure-self-play)): with no bots in the league, the warm-started net still
+>   improves. It does best on small maps it never trained on: with search, 29% wins against hard (warm start 17%).
+>   From scratch it learned nothing in 40 iterations. Duels on one map size beat a fast map curriculum and
+>   3-player training. The recipes are now bot-free, 1v1, and stay on one map size for 100 to 150 iterations.
 >
 > Crazy is not beaten yet: that takes the long training run this document proposes. No trained weights are
 > included.
@@ -77,12 +81,12 @@ Plain AlphaZero does not fit Polytopia out of the box. Each difficulty below has
 | Difficulty | Answer |
 | --- | --- |
 | A turn is 5 to 50 actions, so whole turns are far too many to enumerate | Search over **atomic actions**: one move, attack, build or research per tree edge, end_turn included |
-| 2 to 6 players, and rivals move between my turns | The tree covers **my own turn**; the end_turn leaf is an **afterstate** the value net scores, so rivals' replies are folded into the value. Rivals are real opponents during self-play: bots, past selves, or the net itself |
+| 2 to 6 players, and rivals move between my turns | The tree covers **my own turn**; the end_turn leaf is an **afterstate** the value net scores, so rivals' replies are folded into the value. During self-play the rivals are the net itself or earlier snapshots of it |
 | Branching is large: 46 legal actions on average in bot games, 250+ late in big games | **Gumbel root search** (Danihelka et al., 2022): sample k candidates without replacement, then sequential halving. Policy improvement is guaranteed even with 8 to 32 simulations, where PUCT is not |
 | Fog of war | The network only sees the player's view. The search plays the game's own rules on a **fog copy** that holds only what the player can know, with the view frozen at the root, so trying moves cannot uncover anything (see [Fog of war](#fog-of-war)) |
 | Chance (ruins, explorer rewards) | Every search state gets a **fresh random seed**, so the search samples outcomes instead of reading the real game's seed |
-| Long games with sparse outcomes (300 to 1,000 decisions per player) | A **warm start** from the built-in bots; **playout-cap randomisation** (a quarter of the decisions get the full search and become policy targets, the rest are cheap); a **curriculum** from tiny 1v1 maps to full games |
-| Over-fitting to one opponent | A **league**: each self-play game is against the current net, crazy, hard, or a snapshot of an earlier net |
+| Long games with sparse outcomes (300 to 1,000 decisions per player) | A **warm start** from the built-in bots; **playout-cap randomisation** (a quarter of the decisions get the full search and become policy targets, the rest are cheap); a **curriculum** that stays on tiny 1v1 maps for a long time, then grows the map one size at a time |
+| Over-fitting to one opponent | A **league** of the current net and snapshots of earlier nets. The bots only teach the warm start and judge the evaluations (see [Pure self-play](#pure-self-play)) |
 | One action barely moves the final outcome, so an early value net's Q-gaps are noise, and a search that trusts them drifts (see [Stabilising self-play](#stabilising-self-play)) | Values scaled by their known bounds, not min-max; a **score-margin leaf blend**, annealed away; warm-start positions mixed into every batch as an **anchor** |
 
 ## How it fits together
@@ -249,9 +253,11 @@ end_turn also yields an afterstate position (value only). On 4 cores, 1,500 live
 Each iteration:
 
 1. `workers` processes play `games_per_iter` games with the current weights. The opponent is drawn per game from
-   the league: `self` (every seat is the current net, all recorded), a bot (`bot:normal`, `bot:hard`,
-   `bot:crazy`), or `past` (a recent snapshot). Each curriculum stage can set its own mix: crazy joins once the net
-   can sometimes win. The learner's seat is random.
+   the league: `self` (70%: every seat is the current net, and every seat is recorded) or `past` (30%: the other
+   seats are one of the last 6 snapshots). That is pure self-play. Bots can still be league members (`bot:normal`,
+   `bot:hard`, `bot:crazy`, also per curriculum stage), but the recipes leave them out. A league with bots
+   was a little ahead after 30 iterations, within the noise, but only the net's own snapshots keep getting
+   harder ([Pure self-play](#pure-self-play)). The learner's seat is random.
 2. Every decision of a learner seat becomes a position: the improved policy π′ (full searches only), a value
    target, and, at each end_turn, the afterstate. The value target is TD(λ = 0.9) over the seat's own decisions
    (`play.td_lambda`): mostly the search's value a few decisions later, across the rivals' replies, and only partly
@@ -272,9 +278,11 @@ still learning what single actions are worth.
 head, and the policy is held by the anchor. Search targets start steering the policy only once the value has
 adapted to on-policy games (see [the live run](#live-rules)).
 
-**Curriculum** (`macbook.yaml`): 1v1 on tiny maps for 20 turns (against self, normal, hard and past), then
-tiny/small maps with 2 to 3 tribes (crazy joins), then small to large maps with 2 to 4 tribes, some domination games
-and the full league.
+**Curriculum** (`macbook.yaml`): 1v1 on tiny maps for 20 turns until iteration 150, then 1v1 on small maps for
+25 turns until 300, then small and normal maps with 2 to 4 tribes and some domination games. `gpu.yaml` adds a
+normal-map duel stage (250 to 400) before 2 to 6 tribes on maps up to huge. The stages are long because changing
+the map size every 10 iterations made the net worse everywhere, while duels on one map size carried over to bigger
+maps and to 3-player games ([Pure self-play](#pure-self-play)).
 
 ## Evaluation
 
@@ -389,9 +397,9 @@ either. The diagnostics point at the training signal rather than the search:
 - What the search changes is sensible (more moves and research, less end_turn and training), so the tree is not
   the problem.
 
-The recipes now start the league against opponents the net can sometimes beat. The first curriculum stage uses
-self, normal, hard and past; crazy joins in stage two and gets the full 40% only in stage three. The value warm-up
-stays on. The next levers, in order: larger budgets for the searches that become policy targets (32 to 64),
+After this run the league started against opponents the net can sometimes beat: self, normal, hard and past in
+the first curriculum stage, crazy from stage two (the bots have since left the league, see
+[Pure self-play](#pure-self-play)). The value warm-up stays on. The next levers, in order: larger budgets for the searches that become policy targets (32 to 64),
 TD(λ) value targets over the player's own turns, and the longer games where live-only mechanics (monuments,
 growing temples, embassies) pay off. All but TD(λ) are config changes.
 
@@ -463,12 +471,72 @@ at this scale.
 **4. More imitation instead.** Two more warm-start epochs (validation hit rate 0.66 → 0.68): +0.02 / +0.07 without
 search, −0.04 / +0.05 with search. Self-play with the new recipe beats imitating the bots for longer.
 
-**What works best so far**, and is now the default: c_scale 0.3, 32-simulation full searches (64 on the GPU
-recipe), TD(0.9) value targets, with the leaf blend, anchor, value warm-up and a league that starts against
-beatable opponents. It turns self-play from harmful into helpful against hard. Against crazy, whose +3 stars a turn
-the network has to make up for, nothing measured here moves the needle beyond noise. The next steps need more than
-this VM: more games per iteration and longer runs (the gains against hard came in steps of about 10 iterations),
-crazy in the league once the network wins against hard, and the bigger network of the GPU recipe.
+**What works**: c_scale 0.3, 32-simulation full searches (64 on the GPU recipe), TD(0.9) value targets, with the
+leaf blend, anchor and value warm-up. It turns self-play from harmful into helpful against hard. The league no
+longer needs the bots (next section). Against crazy, which gets 3 stars a turn more than the network, nothing
+measured here moves the needle beyond noise. The next steps need more than this VM: more games per iteration,
+longer runs (the gains against hard came in steps of about 10 iterations), and the bigger network of the GPU
+recipe.
+
+### Pure self-play
+
+Can the net learn from playing only itself? In these runs the league has no bots: `self` (70%, every seat is the
+current net and every seat is recorded) and `past` (30%, the other seats are a recent snapshot). Bots only teach the
+warm start and judge the evaluations. Four runs on the 4-core VM, with the recipe of the previous section otherwise
+(32 simulations, c_scale 0.3, TD(0.9), leaf blend, anchor, 10 value-only iterations). They are evaluated on the same
+seeds: 1v1 tiny maps against hard and against crazy (96 games each), 1v1 small maps against hard (48), and 3-player
+tiny maps against two hard bots (48). Numbers are utility differences to the warm start's policy (standard errors
+0.04 to 0.11), win rates in brackets. The warm start's policy wins 14% / 8% / 6% / 3%.
+
+Policy alone, last checkpoint:
+
+| run | league | training games | tiny vs hard | small vs hard | tiny 3p vs hard | tiny vs crazy | time |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| S1: from scratch (no warm start, no anchor, c_scale 1.0), 40 it | self, past | tiny 1v1 | −0.22 (3%) | −0.17 (0%) | −0.07 (8%) | −0.08 (0%) | 22 min |
+| S2: warm start, 30 it | self, past | tiny 1v1 | +0.07 (17%) | +0.11 (12%) | +0.17 (15%) | +0.03 (4%) | 42 min |
+| S3: warm start, 30 it | self, past | tiny 3-player | +0.14 (20%) | +0.14 (15%) | +0.15 (10%) | +0.06 (6%) | 49 min |
+| S4: warm start, 30 it | self, past | tiny → small (it 10) → normal (it 20), 1v1 | −0.04 (11%) | −0.06 (4%) | +0.09 (8%) | −0.06 (0%) | 75 min |
+| R1 (previous section), 30 it | 50% normal and hard bots | tiny 1v1 | +0.13 (20%) | +0.22 (19%) | +0.27 (21%) | +0.12 (9%) | 40 min |
+
+With the 32-simulation search on top:
+
+| net | tiny vs hard | small vs hard | tiny 3p vs hard | tiny vs crazy |
+| --- | --- | --- | --- | --- |
+| warm start | +0.17 (22%) | +0.17 (17%) | +0.10 (10%) | +0.02 (4%) |
+| S1, it 40 | −0.19 (5%) | −0.13 (2%) | −0.05 (10%) | −0.08 (0%) |
+| S2, it 30 | +0.25 (26%) | **+0.40 (29%)** | +0.26 (15%) | +0.09 (7%) |
+| S3, it 30 | +0.19 (23%) | +0.19 (19%) | +0.22 (15%) | +0.04 (5%) |
+| S4, it 30 | −0.03 (11%) | +0.01 (8%) | +0.20 (8%) | −0.04 (1%) |
+
+What this says, with the caveat that each row is one run: S4's first 10 iterations had exactly S2's settings and
+still ended about 0.2 behind it, so run-to-run noise is as large as most of the differences above.
+
+- **Self-play alone works from the warm start.** S2 improves on the warm start everywhere, most on small maps it
+  never trained on: with search, 29% wins against hard (warm start 17%). It also records every seat, so it gets
+  40% more positions per iteration than R1 below.
+- **Bots in the league gave a small head start.** R1, the same recipe with half its games against the normal and
+  hard bots, was ahead of S2 after 30 iterations on all four suites, by 0.06 to 0.11 on the policy, most against crazy
+  (9% wins against 4%). That is within the run-to-run noise, but every suite points the same way. An S2 attempt
+  that a config bug left with a third of its games against crazy and hard ended close to S2
+  (+0.10 / +0.15 / +0.19 / +0.02), so crazy in the mix did not help. The recipes still leave the bots out: they
+  are fixed opponents, and only the net's own snapshots get harder as it does. A stage can put them back with one line (`opponents:` on that
+  curriculum stage) if a stage stalls.
+- **Not from scratch at this budget.** Without the warm start (S1), 40 iterations (960 games) changed nothing that
+  the evaluation can see. The net stays at 4 actions a turn (the warm-started runs make 6), so its games are short
+  and passive, and it wins 0 to 5% of duels against hard. Its policy loss fell (2.36 → 2.06), so it learned to
+  copy its own search, but the search, guided by an untrained value net, had nothing better to show it. Learning
+  the rules from nothing needs AlphaZero-scale game counts. The warm start is what makes self-play work on a
+  laptop budget. To try it anyway: `warm_start.data=null optim.bc_mix=0 selfplay.policy_warmup=0`.
+- **One map size, for longer.** S4 moved up a size every 10 iterations and ended behind S2 on every suite, even on
+  the small maps it trained on, and took 1.8× as long (a normal-map iteration costs 3× a tiny one). S2, trained on tiny
+  maps only, improved most on small maps. What a duel teaches carries over to a bigger map. Changing the map size
+  every few iterations moves the value targets (a 30-turn normal-map game is scored differently from a 20-turn
+  tiny one) faster than the value net can follow. The recipes now stay on one size for 100 to 150 iterations, then
+  move up one size at a time.
+- **Number of players: train on duels.** S3 trained in 3-player games: 1.2× the time per iteration and no better
+  than S2, even on the 3-player evaluation (+0.22 against +0.26 with search). Duels carried over to 3 players at
+  this scale. The recipes keep 1v1 until the last stage. There, games with 2 to 4 tribes (macbook) or 2 to 6 (gpu)
+  join for what a duel cannot teach: kingmaking, letting two rivals weaken each other, defending on two fronts.
 
 ## Compute plan
 
@@ -479,11 +547,13 @@ gates:
 | phase | iterations | games | gate (live rules, paired vs crazy) |
 | --- | --- | --- | --- |
 | warm start | | 2,000 bot games | hit rate above 0.55 |
-| tiny 1v1 | 0 to 30 | about 700 | above the normal bot at human income (12.5%), then hard (22%) |
-| tiny/small, 2 to 3 players | 30 to 120 | about 2,000 | parity with crazy on duel_small (about 42 to 47%) |
-| small to large, 2 to 4 players | 120 to 300+ | 4,000+ | surpass crazy: duel and FFA win rates above the crazy rows, paired difference > 0 |
+| tiny 1v1 | 0 to 150 | about 3,600 | above the normal bot at human income (12.5%), then hard (22%) |
+| small 1v1 | 150 to 300 | about 3,600 | parity with crazy on duel_small (about 42 to 47%) |
+| small and normal, 2 to 4 players | 300 to 450+ | 3,600+ | surpass crazy: duel and FFA win rates above the crazy rows, paired difference > 0 |
 
-That is a few evenings on a laptop for the first two phases. The last phase is where a many-core box
+That is a few evenings on a laptop for the first two phases. If a phase plateaus before its gate, staying on it
+longer is the cheaper fix than moving up a size early (see [Pure self-play](#pure-self-play)); moving on at a
+plateau instead of at a fixed iteration is an open item. The last phase is where a many-core box
 (`configs/gpu.yaml`: 128 games per iteration, 64-simulation evaluation) pays off. The finished network still plays
 on the laptop.
 
@@ -504,6 +574,9 @@ PolyCommand bridge of `ml/bridge/README.md`. What remains:
   cheap extension is to let the built-in bot play the rivals' turns from each end_turn leaf and score the start of
   my next turn. That needs the hidden part of the board determinised first, or the search learns from rivals'
   units it could not have seen.
+- **When to move up a map size.** The curriculum moves on at fixed iterations. Moving on once the paired
+  evaluation stops improving would spend the budget better. Pure self-play also has no fixed yardstick inside
+  the league, so that gate has to come from the evaluation suites.
 - **Value targets.** TD(0.9) over the player's own decisions is the default now. Its λ, and a value target that
   also learns from the rivals' replies directly (`play.reply`), have not been tuned yet.
 - **The bots see terrain under the fog.** The built-in bots plan paths over the true terrain, unexplored tiles
